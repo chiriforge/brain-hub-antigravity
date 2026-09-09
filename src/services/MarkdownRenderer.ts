@@ -262,7 +262,7 @@ export class MarkdownRenderer {
             const displayLang = language || 'text';
             const rawCodeEncoded = encodeURIComponent(text);
 
-            if (language === 'mermaid') {
+            if (language === 'mermaid' && MermaidSanitizer.isDiagram(text)) {
               const escapedCode = MarkdownRenderer.escapeHtml(text);
               const sanitizedCode = MermaidSanitizer.sanitize(text);
               const sanitizedCodeEncoded = encodeURIComponent(sanitizedCode);

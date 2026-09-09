@@ -2706,6 +2706,24 @@ export class ChatWebviewPanel {
             return mermaidLoadingPromise;
           }
 
+          function isFullMermaidDiagram(code) {
+            if (!code || !code.trim()) return false;
+            const lines = code.trim().split(/\r?\n/);
+            let inFrontmatter = false;
+            for (let i = 0; i < lines.length; i++) {
+              const trimmed = lines[i].trim();
+              if (!trimmed) continue;
+              if (trimmed === '---') {
+                inFrontmatter = !inFrontmatter;
+                continue;
+              }
+              if (inFrontmatter) continue;
+              if (trimmed.startsWith('%%')) continue;
+              return /^\s*(graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|gantt|pie|journey|gitGraph|c4context|c4container|c4component|c4dynamic|c4deployment|mindmap|timeline|quadrantChart|sankey-beta|kanban|block-beta|xychart-beta|requirement|requirementDiagram|architecture-beta|packet-beta)\b/i.test(trimmed);
+            }
+            return false;
+          }
+
           async function renderMermaidDiagrams() {
             const pending = document.querySelectorAll('.mermaid-container:not(.rendered)');
             if (pending.length === 0) return;
@@ -2729,6 +2747,9 @@ export class ChatWebviewPanel {
               const el = containers[i];
               el.classList.add('rendered');
               const rawCode = decodeURIComponent(el.getAttribute('data-mermaid') || '');
+              if (!isFullMermaidDiagram(rawCode)) {
+                continue;
+              }
               const preSanitized = el.getAttribute('data-sanitized') ? decodeURIComponent(el.getAttribute('data-sanitized')) : '';
               const sanitizedCode = preSanitized || sanitizeMermaid(rawCode);
               const uniqueId = 'mermaid-' + Math.random().toString(36).substring(2, 9);

@@ -5,6 +5,49 @@
  * colons, arrows, parentheses, comparison operators, ampersands, etc.).
  */
 export class MermaidSanitizer {
+  public static readonly DIAGRAM_HEADER_REGEX =
+    /^\s*(graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|gantt|pie|journey|gitGraph|c4context|c4container|c4component|c4dynamic|c4deployment|mindmap|timeline|quadrantChart|sankey-beta|kanban|block-beta|xychart-beta|requirement|requirementDiagram|architecture-beta|packet-beta)\b/i;
+
+  /**
+   * Determines whether the given code is a complete Mermaid diagram definition
+   * or merely an illustrative syntax snippet/excerpt.
+   * A full diagram must declare its diagram type header (optionally preceded by comments or frontmatter).
+   */
+  public static isDiagram(code: string): boolean {
+    if (!code || !code.trim()) {
+      return false;
+    }
+
+    const lines = code.trim().split(/\r?\n/);
+    let inFrontmatter = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      // Handle YAML frontmatter (--- ... ---)
+      if (trimmed === '---') {
+        inFrontmatter = !inFrontmatter;
+        continue;
+      }
+      if (inFrontmatter) {
+        continue;
+      }
+
+      // Skip comments or directives (%% ...)
+      if (trimmed.startsWith('%%')) {
+        continue;
+      }
+
+      // First substantive code line must match a supported diagram header
+      return MermaidSanitizer.DIAGRAM_HEADER_REGEX.test(trimmed);
+    }
+
+    return false;
+  }
+
   /**
    * Sanitizes raw Mermaid code to ensure compatibility with Mermaid.js parser.
    */
@@ -22,11 +65,7 @@ export class MermaidSanitizer {
       }
 
       // Skip chart declaration headers
-      if (
-        /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|journey|gitGraph|C4|mindmap|timeline|quadrantChart|sankey-beta|kanban|block-beta|xychart-beta)\b/i.test(
-          trimmed
-        )
-      ) {
+      if (MermaidSanitizer.DIAGRAM_HEADER_REGEX.test(trimmed)) {
         return line;
       }
 

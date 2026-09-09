@@ -1,0 +1,7 @@
+{
+    "sonarlint.connectedMode.project": {
+        "connectionId": "hungle-vn",
+        "projectKey": "hungle-vn_antigravity-history-viewer"
+    },
+    "sonarlint.pathToNodeExecutable": "C:\\Users\\LeMinhHung\\AppData\\Local\\Programs\\nodejs\\node.exe"
+}

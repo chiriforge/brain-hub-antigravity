@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+*.vsix
+.vscode-test/
+.DS_Store
+Thumbs.db
+sessions_index_cache.json
+scratch/
+*.log
+.env*
+.docs/
+.dcignore

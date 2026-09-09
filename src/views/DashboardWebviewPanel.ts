@@ -2965,6 +2965,12 @@ export class DashboardWebviewPanel {
             margin-bottom: 10px;
           }
 
+          /* Suppress Mermaid unhandled parse error artifacts injected directly into body */
+          body > div[id^="dmermaid-"],
+          body > svg[id^="mermaid-"] {
+            display: none !important;
+          }
+
           /* Full Official KaTeX Stylesheet with local fonts */
           ${getKaTeXCss(fontsUri.toString())}
 
@@ -4702,13 +4708,23 @@ export class DashboardWebviewPanel {
                 const res = await mermaid.render(uniqueId, sanitizedCode);
                 renderedSvg = res.svg;
               } catch (err1) {
+                const tempEl1 = document.getElementById('d' + uniqueId);
+                if (tempEl1) tempEl1.remove();
+
                 try {
                   const res2 = await mermaid.render(uniqueId + '-raw', rawCode);
                   renderedSvg = res2.svg;
                 } catch (err2) {
+                  const tempEl2 = document.getElementById('d' + uniqueId + '-raw');
+                  if (tempEl2) tempEl2.remove();
                   renderErr = err1 || err2;
                 }
               }
+
+              const leftover1 = document.getElementById('d' + uniqueId);
+              if (leftover1) leftover1.remove();
+              const leftover2 = document.getElementById('d' + uniqueId + '-raw');
+              if (leftover2) leftover2.remove();
 
               if (renderedSvg) {
                 el.innerHTML =

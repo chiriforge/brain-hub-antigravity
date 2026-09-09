@@ -635,6 +635,12 @@ export class MarkdownPreviewWebviewPanel {
             font-family: var(--font-mono);
           }
 
+          /* Suppress Mermaid unhandled parse error artifacts injected directly into body */
+          body > div[id^="dmermaid-"],
+          body > svg[id^="mermaid-"] {
+            display: none !important;
+          }
+
           /* Fullscreen Modal for Diagrams - Architectural Canvas with Pan & Zoom */
           .fullscreen-modal {
             display: none;
@@ -1030,6 +1036,9 @@ export class MarkdownPreviewWebviewPanel {
                     '<div class="mermaid-source-view"><pre><code>' + escapeHtml(rawCode) + '</code></pre></div>' +
                   '</div>';
               } catch (renderErr) {
+                const tempEl = document.getElementById('d' + uniqueId);
+                if (tempEl) tempEl.remove();
+
                 const errMsg = renderErr && renderErr.message ? renderErr.message : String(renderErr);
                 const encodedRaw = encodeURIComponent(rawCode);
 
@@ -1050,6 +1059,9 @@ export class MarkdownPreviewWebviewPanel {
                       '<div style="background:var(--code-bg); padding:10px; border-radius:var(--radius-sm); font-family:var(--font-mono); font-size:11.5px; white-space:pre-wrap;">' + escapeHtml(rawCode) + '</div>' +
                     '</div>' +
                   '</div>';
+              } finally {
+                const leftover = document.getElementById('d' + uniqueId);
+                if (leftover) leftover.remove();
               }
             }
           }

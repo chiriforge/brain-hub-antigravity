@@ -2604,6 +2604,18 @@ export class ChatWebviewPanel {
                 return '|' + clean + '|';
               });
 
+              // 1b. Normalize unsupported bidirectional arrows: NodeA <--> NodeB -> NodeA --> NodeB and NodeB --> NodeA
+              if (/<[-=]+>/.test(processed)) {
+                const biMatch = processed.match(/^(\\s*)([a-zA-Z0-9_\\-]+)\\s*<[-=]+>\\s*([a-zA-Z0-9_\\-]+)(.*)$/);
+                if (biMatch) {
+                  const indent = biMatch[1];
+                  const leftNode = biMatch[2];
+                  const rightNode = biMatch[3];
+                  const rest = biMatch[4] || '';
+                  return indent + leftNode + ' --> ' + rightNode + rest + '\\n' + indent + rightNode + ' --> ' + leftNode + rest;
+                }
+              }
+
               // 2. Subgraph titles
               if (/^\\s*subgraph\\s+/i.test(processed)) {
                 processed = processed.replace(/^\\s*subgraph\\s+([^\\["\\r\\n]+)$/i, (m, title) => {

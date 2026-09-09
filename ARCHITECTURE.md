@@ -35,7 +35,7 @@ This document details the software architecture, internal subsystems, data struc
 The extension follows a modular, service-oriented architecture separating data persistence, file system discovery, background synchronization, sanitization, and presentation layers:
 
 ```mermaid
-graph TD
+flowchart TD
     subgraph AntigravityStorage ["Antigravity Storage (Local Brain Directory)"]
         BrainDir["~/.gemini/antigravity-ide/brain/"]
         Transcripts["transcript.jsonl (Compact Logs)"]
@@ -68,7 +68,8 @@ graph TD
 
     Transcripts --> Scanner
     Artifacts --> Scanner
-    BrainDir <--> GitSync
+    BrainDir --> GitSync
+    GitSync --> BrainDir
 
     Scanner --> TreeProvider
     Scanner --> Dashboard

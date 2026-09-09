@@ -47,6 +47,15 @@ export class MermaidSanitizer {
         return '|' + clean + '|';
       });
 
+      // 1b. Normalize unsupported bidirectional arrows: NodeA <--> NodeB -> NodeA --> NodeB and NodeB --> NodeA
+      if (/<[-=]+>/.test(processed)) {
+        const biMatch = processed.match(/^(\s*)([a-zA-Z0-9_\-]+)\s*<[-=]+>\s*([a-zA-Z0-9_\-]+)(.*)$/);
+        if (biMatch) {
+          const [, indent, leftNode, rightNode, rest] = biMatch;
+          return `${indent}${leftNode} --> ${rightNode}${rest}\n${indent}${rightNode} --> ${leftNode}${rest}`;
+        }
+      }
+
       // 2. Subgraph titles: subgraph Sub_Title [My Title: With Colons] or subgraph "My Title: With Colons"
       if (/^\s*subgraph\s+/i.test(processed)) {
         processed = processed.replace(/^\s*subgraph\s+([^\["\r\n]+)$/i, (m, title) => {

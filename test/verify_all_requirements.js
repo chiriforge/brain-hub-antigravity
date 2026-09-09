@@ -100,8 +100,8 @@ assert(dash.includes("case 'openIdePreview':"), 'Dashboard: openIdePreview handl
 // 8d. Check Extension package.json command registration
 const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 const cmdNames = pkg.contributes.commands.map(c => c.command);
-assert(cmdNames.includes('antigravityHistory.openRichMarkdownPreview'), 'package.json: openRichMarkdownPreview command missing');
-assert(cmdNames.includes('antigravityHistory.openIdeMarkdownPreview'), 'package.json: openIdeMarkdownPreview command missing');
+assert(cmdNames.includes('brainHub.openRichMarkdownPreview'), 'package.json: openRichMarkdownPreview command missing');
+assert(cmdNames.includes('brainHub.openIdeMarkdownPreview'), 'package.json: openIdeMarkdownPreview command missing');
 
 // 8e. Check MarkdownPreviewWebviewPanel features (KaTeX, Mermaid Sanitize Toggle, Hot Reload Watcher)
 assert(mdPanel.includes('sanitizeMermaid'), 'MarkdownPreviewWebviewPanel: sanitizeMermaid logic missing');

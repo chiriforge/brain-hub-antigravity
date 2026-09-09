@@ -346,7 +346,8 @@ esbuild.build({
 1. Define the command in [`package.json`](./package.json) under `contributes.commands`:
    ```json
    {
-     "command": "antigravityHistory.myNewFeature",
+     "command": "brainHub.myNewFeature",
+     "category": "Brain Hub",
      "title": "My New Feature",
      "icon": "$(sparkle)"
    }
@@ -354,7 +355,7 @@ esbuild.build({
 2. Register the command handler in [`src/extension.ts`](./src/extension.ts):
    ```typescript
    context.subscriptions.push(
-     vscode.commands.registerCommand('antigravityHistory.myNewFeature', async () => {
+     vscode.commands.registerCommand('brainHub.myNewFeature', async () => {
        vscode.window.showInformationMessage('Hello from My New Feature!');
      })
    );

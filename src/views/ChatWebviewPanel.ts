@@ -35,7 +35,7 @@ export class ChatWebviewPanel {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      'antigravityChatViewer',
+      'brainHubChatViewer',
       `Chat: ${session.title.substring(0, 30)}...`,
       vscode.ViewColumn.Active,
       {
@@ -101,7 +101,7 @@ export class ChatWebviewPanel {
             break;
 
           case 'archiveProjectDocs':
-            await vscode.commands.executeCommand('antigravityHistory.exportProjectDocs');
+            await vscode.commands.executeCommand('brainHub.exportProjectDocs');
             break;
 
           case 'openFolder':
@@ -109,7 +109,7 @@ export class ChatWebviewPanel {
             break;
 
           case 'deleteSession':
-            await vscode.commands.executeCommand('antigravityHistory.deleteSession', this.currentSession);
+            await vscode.commands.executeCommand('brainHub.deleteSession', this.currentSession);
             this.dispose();
             break;
 
@@ -139,9 +139,9 @@ export class ChatWebviewPanel {
             break;
 
           case 'toggleMessageOrder':
-            const currentOrder = vscode.workspace.getConfiguration('antigravityHistory').get<string>('messageOrder', 'newestFirst');
+            const currentOrder = vscode.workspace.getConfiguration('brainHub').get<string>('messageOrder', 'newestFirst');
             const newOrder = currentOrder === 'newestFirst' ? 'oldestFirst' : 'newestFirst';
-            await vscode.workspace.getConfiguration('antigravityHistory').update('messageOrder', newOrder, vscode.ConfigurationTarget.Global);
+            await vscode.workspace.getConfiguration('brainHub').update('messageOrder', newOrder, vscode.ConfigurationTarget.Global);
             await this.updateContent();
             break;
 
@@ -162,7 +162,7 @@ export class ChatWebviewPanel {
       return;
     }
 
-    const autoReload = vscode.workspace.getConfiguration('antigravityHistory').get<boolean>('autoReloadOnLiveChat', true);
+    const autoReload = vscode.workspace.getConfiguration('brainHub').get<boolean>('autoReloadOnLiveChat', true);
     if (!autoReload || !this.currentSession || !this.currentSession.path) {
       return;
     }
@@ -238,7 +238,7 @@ export class ChatWebviewPanel {
 
   public async updateContent(isLiveUpdate: boolean = false): Promise<void> {
     const scanner = SessionScanner.getInstance();
-    const cfg = vscode.workspace.getConfiguration('antigravityHistory');
+    const cfg = vscode.workspace.getConfiguration('brainHub');
     const messageOrder = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
 
     if (this.isShowingCombinedThread) {
@@ -510,7 +510,7 @@ export class ChatWebviewPanel {
 
   private generateHtml(session: ChatSession, messages: ChatMessage[], threadSessions: ChatSession[] = []): string {
     MarkdownRenderer.setSessionPath(session.path);
-    const cfg = vscode.workspace.getConfiguration('antigravityHistory');
+    const cfg = vscode.workspace.getConfiguration('brainHub');
     const messageOrder = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
     const defaultToolsState = cfg.get<'collapsed' | 'expanded'>('defaultToolsState', 'collapsed');
     const defaultAiStepsState = cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed');
@@ -600,12 +600,12 @@ export class ChatWebviewPanel {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Antigravity Chat Viewer</title>
-        <script src="${mermaidUri}"></script>
-        <script>
-          if (typeof mermaid === 'undefined') {
-            document.write('<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"><\\/script>');
+        <style>
+          html, body {
+            background-color: var(--vscode-editor-background, #1e1e1e);
+            color: var(--vscode-editor-foreground, #cccccc);
           }
-        </script>
+        </style>
         <style>
           ${HIGHLIGHT_CSS}
         </style>
@@ -2674,8 +2674,29 @@ export class ChatWebviewPanel {
             return sanitizedLines.join('\\n');
           }
 
+          let mermaidLoadingPromise = null;
+          function loadMermaidScript() {
+            if (typeof mermaid !== 'undefined') return Promise.resolve(true);
+            if (mermaidLoadingPromise) return mermaidLoadingPromise;
+            mermaidLoadingPromise = new Promise((resolve) => {
+              const s = document.createElement('script');
+              s.src = '${mermaidUri}';
+              s.onload = () => resolve(true);
+              s.onerror = () => resolve(false);
+              document.head.appendChild(s);
+            });
+            return mermaidLoadingPromise;
+          }
+
           async function renderMermaidDiagrams() {
-            if (typeof mermaid === 'undefined') return;
+            const pending = document.querySelectorAll('.mermaid-container:not(.rendered)');
+            if (pending.length === 0) return;
+
+            if (typeof mermaid === 'undefined') {
+              const ok = await loadMermaidScript();
+              if (!ok || typeof mermaid === 'undefined') return;
+            }
+
             try {
               mermaid.initialize({
                 startOnLoad: false,

@@ -45,6 +45,9 @@ export class DashboardWebviewPanel {
     DashboardWebviewPanel.treeProvider = provider;
   }
 
+  private static cachedCodiconCss: string = '';
+  private static cachedVersion: string = '';
+
   private readonly panel: vscode.WebviewPanel;
   private readonly extensionUri: vscode.Uri;
   private disposables: vscode.Disposable[] = [];
@@ -80,7 +83,7 @@ export class DashboardWebviewPanel {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      'antigravityHistoryDashboard',
+      'brainHubDashboard',
       'Brain Hub for Antigravity',
       vscode.ViewColumn.One,
       {
@@ -120,13 +123,60 @@ export class DashboardWebviewPanel {
     this.extensionUri = extensionUri;
     this.selectedSessionId = initialSessionId;
 
-    this.updateContent();
+    const scanner = SessionScanner.getInstance();
+    if (scanner.hasValidCache()) {
+      const cachedSessions = scanner.getCachedSessions();
+      if (!this.selectedSessionId && cachedSessions.length > 0) {
+        this.selectedSessionId = cachedSessions[0].id;
+      }
+      const activeSession = this.selectedSessionId
+        ? cachedSessions.find((s) => s.id === this.selectedSessionId) || cachedSessions[0]
+        : cachedSessions[0];
+      const rootId = activeSession ? (activeSession.rootId || activeSession.id) : undefined;
+      const threadSessions = rootId
+        ? cachedSessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId)
+        : (activeSession ? [activeSession] : []);
 
-    this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+      const configState = this.getAppConfigState();
+      this.panel.webview.html = this.generateDashboardHtml(
+        cachedSessions,
+        activeSession,
+        [],
+        threadSessions,
+        configState,
+        true
+      );
+      this.isHtmlInitialized = true;
+    } else {
+      this.panel.webview.html = this.generateSkeletonHtml();
+    }
+
+    let isReadyHandled = false;
+    const readyFallbackTimer = setTimeout(() => {
+      if (!isReadyHandled) {
+        isReadyHandled = true;
+        this.updateContent();
+      }
+    }, 400);
+
+    this.panel.onDidDispose(() => {
+      clearTimeout(readyFallbackTimer);
+      this.dispose();
+    }, null, this.disposables);
 
     this.panel.webview.onDidReceiveMessage(
       async (message) => {
         switch (message.command) {
+          case 'dashboardReady':
+            if (!isReadyHandled) {
+              isReadyHandled = true;
+              clearTimeout(readyFallbackTimer);
+              if (this.selectedSessionId) {
+                await this.updateReaderOnly(this.selectedSessionId);
+              }
+            }
+            break;
+
           case 'selectSession':
             this.selectedSessionId = message.sessionId;
             this.isShowingCombinedThread = false;
@@ -136,7 +186,7 @@ export class DashboardWebviewPanel {
           case 'selectLatestSession':
             const allLatestSessions = await SessionScanner.getInstance().scanSessions();
             if (allLatestSessions.length > 0) {
-              const cfgSort = vscode.workspace.getConfiguration('antigravityHistory').get<string>('sessionSortBy', 'lastModified');
+              const cfgSort = vscode.workspace.getConfiguration('brainHub').get<string>('sessionSortBy', 'lastModified');
               const sorted = [...allLatestSessions].sort((a, b) => {
                 if (cfgSort === 'createdAt') {
                   return (b.createdAt || b.lastModified).getTime() - (a.createdAt || a.lastModified).getTime();
@@ -146,7 +196,7 @@ export class DashboardWebviewPanel {
               const latestId = sorted[0].id;
               this.selectedSessionId = latestId;
               this.isShowingCombinedThread = false;
-              const cfgOrder = vscode.workspace.getConfiguration('antigravityHistory').get<string>('messageOrder', 'newestFirst');
+              const cfgOrder = vscode.workspace.getConfiguration('brainHub').get<string>('messageOrder', 'newestFirst');
               await this.updateReaderOnly(latestId, false, cfgOrder === 'newestFirst' ? 'top' : 'bottom');
             }
             break;
@@ -165,9 +215,9 @@ export class DashboardWebviewPanel {
             break;
 
           case 'toggleMessageOrder':
-            const currentOrder = vscode.workspace.getConfiguration('antigravityHistory').get<string>('messageOrder', 'newestFirst');
+            const currentOrder = vscode.workspace.getConfiguration('brainHub').get<string>('messageOrder', 'newestFirst');
             const newOrder = currentOrder === 'newestFirst' ? 'oldestFirst' : 'newestFirst';
-            await vscode.workspace.getConfiguration('antigravityHistory').update('messageOrder', newOrder, vscode.ConfigurationTarget.Global);
+            await vscode.workspace.getConfiguration('brainHub').update('messageOrder', newOrder, vscode.ConfigurationTarget.Global);
             await this.updateContent();
             break;
 
@@ -251,16 +301,16 @@ export class DashboardWebviewPanel {
             break;
 
           case 'cleanEmptySessions':
-            await vscode.commands.executeCommand('antigravityHistory.cleanEmptySessions');
+            await vscode.commands.executeCommand('brainHub.cleanEmptySessions');
             break;
 
           case 'archiveProjectDocs':
-            await vscode.commands.executeCommand('antigravityHistory.exportProjectDocs');
+            await vscode.commands.executeCommand('brainHub.exportProjectDocs');
             break;
 
           case 'deleteSession':
             if (this.selectedSessionId) {
-              await vscode.commands.executeCommand('antigravityHistory.deleteSession', this.selectedSessionId);
+              await vscode.commands.executeCommand('brainHub.deleteSession', this.selectedSessionId);
             }
             break;
 
@@ -276,12 +326,12 @@ export class DashboardWebviewPanel {
           }
 
           case 'toggleWorkspaceFilter':
-            await vscode.commands.executeCommand('antigravityHistory.toggleWorkspaceFilter');
+            await vscode.commands.executeCommand('brainHub.toggleWorkspaceFilter');
             break;
 
           case 'toggleHideEmptySessions':
           case 'toggleHideEmpty':
-            await vscode.commands.executeCommand('antigravityHistory.toggleHideEmptySessions');
+            await vscode.commands.executeCommand('brainHub.toggleHideEmptySessions');
             break;
 
           case 'openVsCodeSettings':
@@ -301,7 +351,7 @@ export class DashboardWebviewPanel {
             break;
 
           case 'saveSettings':
-            const cfg = vscode.workspace.getConfiguration('antigravityHistory');
+            const cfg = vscode.workspace.getConfiguration('brainHub');
             if (message.settings) {
               if (message.settings.machineName !== undefined) {
                 await cfg.update('machineName', message.settings.machineName.trim() || undefined, vscode.ConfigurationTarget.Global);
@@ -536,7 +586,7 @@ export class DashboardWebviewPanel {
   private setupSessionWatcher(sessionId: string, sessionPath: string): void {
     this.disposeSessionWatcher();
 
-    const autoReload = vscode.workspace.getConfiguration('antigravityHistory').get<boolean>('autoReloadOnLiveChat', true);
+    const autoReload = vscode.workspace.getConfiguration('brainHub').get<boolean>('autoReloadOnLiveChat', true);
     if (!autoReload) {
       return;
     }
@@ -612,11 +662,31 @@ export class DashboardWebviewPanel {
     }
   }
 
+  private getAppConfigState(gitRemoteUrl: string = ''): AppConfigState {
+    const cfg = vscode.workspace.getConfiguration('brainHub');
+    const scanner = SessionScanner.getInstance();
+    return {
+      machineName: cfg.get<string>('machineName', ''),
+      autoSyncOnStartup: cfg.get<boolean>('autoSyncOnStartup', true),
+      autoSyncIntervalMinutes: cfg.get<number>('autoSyncIntervalMinutes', 30),
+      filterWorkspaceByDefault: cfg.get<boolean>('filterWorkspaceByDefault', false),
+      hideEmptySessions: cfg.get<boolean>('hideEmptySessions', true),
+      autoReloadOnLiveChat: cfg.get<boolean>('autoReloadOnLiveChat', true),
+      brainPath: cfg.get<string>('brainPath', ''),
+      gitRemoteUrl,
+      defaultBrainDir: scanner.getDefaultBrainDirectory(),
+      messageOrder: cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst'),
+      sessionSortBy: cfg.get<'lastModified' | 'createdAt'>('sessionSortBy', 'lastModified'),
+      defaultToolsState: cfg.get<'collapsed' | 'expanded'>('defaultToolsState', 'collapsed'),
+      defaultAiStepsState: cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed')
+    };
+  }
+
   public async selectSession(sessionId: string): Promise<void> {
     this.selectedSessionId = sessionId;
     this.isShowingCombinedThread = false;
     const scanner = SessionScanner.getInstance();
-    const sessions = await scanner.scanSessions(false);
+    const sessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
     const exists = sessions.some((s) => s.id === sessionId);
     if (!exists) {
       await this.updateContent(true);
@@ -632,7 +702,7 @@ export class DashboardWebviewPanel {
   ): Promise<void> {
     try {
       const scanner = SessionScanner.getInstance();
-      const sessions = await scanner.scanSessions(false);
+      const sessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
       
       let activeSession: ChatSession | undefined = undefined;
       let activeMessages: ChatMessage[] = [];
@@ -670,28 +740,12 @@ export class DashboardWebviewPanel {
 
       this.setupSessionWatcher(activeSession.id, activeSession.path);
 
-      const cfg = vscode.workspace.getConfiguration('antigravityHistory');
+      const cfg = vscode.workspace.getConfiguration('brainHub');
       const messageOrder = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
-      const defaultToolsState = cfg.get<'collapsed' | 'expanded'>('defaultToolsState', 'collapsed');
-      const defaultAiStepsState = cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed');
 
-      const configState: AppConfigState = {
-        machineName: cfg.get<string>('machineName', ''),
-        autoSyncOnStartup: cfg.get<boolean>('autoSyncOnStartup', true),
-        autoSyncIntervalMinutes: cfg.get<number>('autoSyncIntervalMinutes', 30),
-        filterWorkspaceByDefault: cfg.get<boolean>('filterWorkspaceByDefault', false),
-        hideEmptySessions: cfg.get<boolean>('hideEmptySessions', true),
-        autoReloadOnLiveChat: cfg.get<boolean>('autoReloadOnLiveChat', true),
-        brainPath: cfg.get<string>('brainPath', ''),
-        gitRemoteUrl: '',
-        defaultBrainDir: scanner.getDefaultBrainDirectory(),
-        messageOrder,
-        sessionSortBy: cfg.get<'lastModified' | 'createdAt'>('sessionSortBy', 'lastModified'),
-        defaultToolsState,
-        defaultAiStepsState
-      };
+      const configState = this.getAppConfigState();
 
-      const chatHtml = this.generateReaderHtml(activeSession, activeMessages, threadSessions, configState);
+      const chatHtml = this.generateReaderHtml(activeSession, activeMessages, threadSessions, configState, false);
 
       const resolvedScrollEdge =
         typeof forceScrollEdge === 'boolean'
@@ -718,7 +772,7 @@ export class DashboardWebviewPanel {
     }
     const sessionId = this.selectedSessionId;
     SessionScanner.getInstance().invalidateSessionCache(sessionId);
-    const cfg = vscode.workspace.getConfiguration('antigravityHistory');
+    const cfg = vscode.workspace.getConfiguration('brainHub');
     const order = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
     await this.updateReaderOnly(sessionId, false, order === 'newestFirst' ? 'top' : 'bottom');
 
@@ -736,7 +790,14 @@ export class DashboardWebviewPanel {
   public async updateContent(forceRefresh: boolean = false): Promise<void> {
     try {
       const scanner = SessionScanner.getInstance();
-      const sessions = await scanner.scanSessions(forceRefresh);
+
+      // Fast initial render from cache: do NOT block initial paint on full disk scan
+      let sessions: ChatSession[];
+      if (!forceRefresh && scanner.hasValidCache()) {
+        sessions = scanner.getCachedSessions();
+      } else {
+        sessions = await scanner.scanSessions(forceRefresh);
+      }
 
       if (!this.selectedSessionId && sessions.length > 0) {
         this.selectedSessionId = sessions[0].id;
@@ -744,12 +805,18 @@ export class DashboardWebviewPanel {
 
       // If the dashboard DOM is already initialized, update dynamically without destroying webview DOM!
       if (this.isHtmlInitialized) {
-        const sessionListHtml = this.generateSessionListHtml(sessions, this.selectedSessionId);
-        await this.panel.webview.postMessage({
-          command: 'updateSessionList',
-          sessionListHtml,
-          totalSessions: sessions.length
-        });
+        // Trigger background git status check lazily so it never competes with initial paint
+        setTimeout(() => {
+          const gitSync = GitSyncService.getInstance();
+          gitSync.getStatus().then((gitStatus) => {
+            if (gitStatus.remoteUrl && this.panel) {
+              this.panel.webview.postMessage({
+                command: 'updateGitRemoteUrl',
+                remoteUrl: gitStatus.remoteUrl
+              });
+            }
+          }).catch(() => {});
+        }, 3000);
 
         if (this.selectedSessionId) {
           const currentSession = sessions.find((s) => s.id === this.selectedSessionId);
@@ -799,26 +866,19 @@ export class DashboardWebviewPanel {
         this.lastActiveSessionMsgCount = activeSession.messageCount || 0;
       }
 
-      const cfg = vscode.workspace.getConfiguration('antigravityHistory');
-      const gitStatus = await GitSyncService.getInstance().getStatus();
+      const gitSync = GitSyncService.getInstance();
+      gitSync.getStatus().then((gitStatus) => {
+        if (gitStatus.remoteUrl && this.panel) {
+          this.panel.webview.postMessage({
+            command: 'updateGitRemoteUrl',
+            remoteUrl: gitStatus.remoteUrl
+          });
+        }
+      }).catch(() => {});
 
-      const configState: AppConfigState = {
-        machineName: cfg.get<string>('machineName', ''),
-        autoSyncOnStartup: cfg.get<boolean>('autoSyncOnStartup', true),
-        autoSyncIntervalMinutes: cfg.get<number>('autoSyncIntervalMinutes', 30),
-        filterWorkspaceByDefault: cfg.get<boolean>('filterWorkspaceByDefault', false),
-        hideEmptySessions: cfg.get<boolean>('hideEmptySessions', true),
-        autoReloadOnLiveChat: cfg.get<boolean>('autoReloadOnLiveChat', true),
-        brainPath: cfg.get<string>('brainPath', ''),
-        gitRemoteUrl: gitStatus.remoteUrl || '',
-        defaultBrainDir: scanner.getDefaultBrainDirectory(),
-        messageOrder: cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst'),
-        sessionSortBy: cfg.get<'lastModified' | 'createdAt'>('sessionSortBy', 'lastModified'),
-        defaultToolsState: cfg.get<'collapsed' | 'expanded'>('defaultToolsState', 'collapsed'),
-        defaultAiStepsState: cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed')
-      };
+      const configState = this.getAppConfigState();
 
-      this.panel.webview.html = this.generateDashboardHtml(sessions, activeSession, activeMessages, threadSessions, configState);
+      this.panel.webview.html = this.generateDashboardHtml(sessions, activeSession, activeMessages, threadSessions, configState, false);
       this.isHtmlInitialized = true;
     } catch (err) {
       console.error('Error in DashboardWebviewPanel.updateContent:', err);
@@ -983,8 +1043,9 @@ export class DashboardWebviewPanel {
       { key: 'older', title: 'Older', sessions: [] }
     ];
 
-    const cfg = vscode.workspace.getConfiguration('antigravityHistory');
+    const cfg = vscode.workspace.getConfiguration('brainHub');
     const sortBy = cfg.get<string>('sessionSortBy', 'lastModified');
+    const expansionMode = cfg.get<string>('defaultGroupExpansion', 'smart');
 
     for (const session of allSessions) {
       const time = (sortBy === 'createdAt'
@@ -1003,19 +1064,30 @@ export class DashboardWebviewPanel {
     }
 
     const activeGroups = groups.filter((g) => g.sessions.length > 0);
+    const hasToday = groups[0].sessions.length > 0;
+    const hasYesterday = groups[1].sessions.length > 0;
+    const hasWeek = groups[2].sessions.length > 0;
+    const hasOlder = groups[3].sessions.length > 0;
 
     return activeGroups
       .map((g) => {
         const containsSelected = targetSelectedId ? g.sessions.some((s) => s.id === targetSelectedId) : false;
         let isOpen = false;
-        if (g.key === 'today' || g.key === 'yesterday') {
+        if (containsSelected) {
           isOpen = true;
-        } else if (containsSelected) {
+        } else if (expansionMode === 'allExpanded') {
           isOpen = true;
-        } else if (g.key === 'week' && groups[0].sessions.length === 0 && groups[1].sessions.length === 0) {
-          isOpen = true;
-        } else if (g.key === 'older' && groups[0].sessions.length === 0 && groups[1].sessions.length === 0 && groups[2].sessions.length === 0) {
-          isOpen = true;
+        } else if (expansionMode === 'collapsed') {
+          isOpen = false;
+        } else {
+          // 'smart' mode:
+          if (hasToday || hasYesterday) {
+            isOpen = g.key === 'today' || g.key === 'yesterday';
+          } else if (hasWeek) {
+            isOpen = g.key === 'week';
+          } else if (hasOlder) {
+            isOpen = g.key === 'older';
+          }
         }
 
         const itemsHtml = g.sessions
@@ -1039,16 +1111,308 @@ export class DashboardWebviewPanel {
       .join('\n');
   }
 
+  private generateSkeletonHtml(): string {
+    return `<!DOCTYPE html>
+<html lang="en" style="background-color: var(--vscode-editor-background, #1e1e1e); color: var(--vscode-editor-foreground, #cccccc);">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brain Hub for Antigravity</title>
+  <style>
+    html, body {
+      background-color: var(--vscode-editor-background, #1e1e1e) !important;
+      color: var(--vscode-editor-foreground, #cccccc) !important;
+      margin: 0;
+      padding: 0;
+    }
+    :root {
+      --bg-primary: var(--vscode-editor-background, #1e1e1e);
+      --bg-secondary: var(--vscode-sideBar-background, var(--vscode-editorWidget-background, #252526));
+      --bg-tertiary: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-input-background, #2d2d2d));
+      --border-color: var(--vscode-editorWidget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.2)));
+      --text-muted: var(--vscode-descriptionForeground, #888888);
+      --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+      --shimmer-bg: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.12));
+      --shimmer-highlight: var(--vscode-editor-inactiveSelectionBackground, rgba(128, 128, 128, 0.22));
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-primary);
+      color: var(--text-muted);
+      font-family: var(--font-family);
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .skeleton-bone {
+      background: linear-gradient(90deg, var(--shimmer-bg) 25%, var(--shimmer-highlight) 50%, var(--shimmer-bg) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.8s infinite ease-in-out;
+      border-radius: 4px;
+    }
+    .skeleton-header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 48px;
+      flex-shrink: 0;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo-box {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+    }
+    .title-box {
+      width: 180px;
+      height: 18px;
+      border-radius: 4px;
+    }
+    .header-center {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      max-width: 440px;
+    }
+    .search-box {
+      width: 100%;
+      height: 28px;
+      border-radius: 6px;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-box {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+    }
+    .skeleton-body {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .skeleton-sidebar {
+      width: 320px;
+      min-width: 280px;
+      max-width: 380px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border-color);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .sidebar-filter {
+      height: 30px;
+      border-radius: 6px;
+      width: 100%;
+    }
+    .group-header-skeleton {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 4px;
+      margin-top: 6px;
+    }
+    .group-title-bone {
+      height: 14px;
+      width: 90px;
+    }
+    .group-count-bone {
+      height: 14px;
+      width: 24px;
+      margin-left: auto;
+      border-radius: 8px;
+    }
+    .item-skeleton {
+      padding: 8px 10px;
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: var(--shimmer-bg);
+      opacity: 0.7;
+    }
+    .item-title-bone {
+      height: 14px;
+      width: 80%;
+    }
+    .item-sub-bone {
+      height: 10px;
+      width: 55%;
+    }
+    .skeleton-reader {
+      flex: 1;
+      background: var(--bg-primary);
+      padding: 24px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow: hidden;
+    }
+    .reader-header-skeleton {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .reader-title-bone {
+      height: 24px;
+      width: 60%;
+    }
+    .reader-meta-bone {
+      height: 12px;
+      width: 35%;
+    }
+    .message-card-skeleton {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: var(--bg-secondary);
+    }
+    .msg-header-bone {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .avatar-bone {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+    }
+    .name-bone {
+      height: 14px;
+      width: 120px;
+    }
+    .msg-line-bone {
+      height: 12px;
+      width: 95%;
+    }
+    .msg-line-short {
+      height: 12px;
+      width: 70%;
+    }
+    .loading-notice {
+      margin-top: auto;
+      text-align: center;
+      padding: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="skeleton-header">
+    <div class="header-left">
+      <div class="skeleton-bone logo-box"></div>
+      <div class="skeleton-bone title-box"></div>
+    </div>
+    <div class="header-center">
+      <div class="skeleton-bone search-box"></div>
+    </div>
+    <div class="header-right">
+      <div class="skeleton-bone btn-box"></div>
+      <div class="skeleton-bone btn-box"></div>
+      <div class="skeleton-bone btn-box"></div>
+    </div>
+  </div>
+  <div class="skeleton-body">
+    <div class="skeleton-sidebar">
+      <div class="skeleton-bone sidebar-filter"></div>
+      <div class="group-header-skeleton">
+        <div class="skeleton-bone group-title-bone"></div>
+        <div class="skeleton-bone group-count-bone"></div>
+      </div>
+      <div class="item-skeleton">
+        <div class="skeleton-bone item-title-bone"></div>
+        <div class="skeleton-bone item-sub-bone"></div>
+      </div>
+      <div class="item-skeleton">
+        <div class="skeleton-bone item-title-bone" style="width: 65%;"></div>
+        <div class="skeleton-bone item-sub-bone" style="width: 45%;"></div>
+      </div>
+      <div class="group-header-skeleton" style="margin-top: 12px;">
+        <div class="skeleton-bone group-title-bone" style="width: 70px;"></div>
+        <div class="skeleton-bone group-count-bone"></div>
+      </div>
+      <div class="item-skeleton">
+        <div class="skeleton-bone item-title-bone" style="width: 85%;"></div>
+        <div class="skeleton-bone item-sub-bone" style="width: 50%;"></div>
+      </div>
+      <div class="item-skeleton">
+        <div class="skeleton-bone item-title-bone" style="width: 75%;"></div>
+        <div class="skeleton-bone item-sub-bone" style="width: 40%;"></div>
+      </div>
+    </div>
+    <div class="skeleton-reader">
+      <div class="reader-header-skeleton">
+        <div class="skeleton-bone reader-title-bone"></div>
+        <div class="skeleton-bone reader-meta-bone"></div>
+      </div>
+      <div class="message-card-skeleton">
+        <div class="msg-header-bone">
+          <div class="skeleton-bone avatar-bone"></div>
+          <div class="skeleton-bone name-bone"></div>
+        </div>
+        <div class="skeleton-bone msg-line-bone"></div>
+        <div class="skeleton-bone msg-line-short"></div>
+      </div>
+      <div class="message-card-skeleton">
+        <div class="msg-header-bone">
+          <div class="skeleton-bone avatar-bone"></div>
+          <div class="skeleton-bone name-bone" style="width: 140px;"></div>
+        </div>
+        <div class="skeleton-bone msg-line-bone"></div>
+        <div class="skeleton-bone msg-line-bone" style="width: 90%;"></div>
+        <div class="skeleton-bone msg-line-short"></div>
+      </div>
+      <div class="loading-notice">
+        <span>⚡ Loading conversations from Brain repository...</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
   private generateDashboardHtml(
     allSessions: ChatSession[],
     activeSession?: ChatSession,
     messages: ChatMessage[] = [],
     threadSessions: ChatSession[] = [],
-    configState?: AppConfigState
+    configState?: AppConfigState,
+    isLoadingPlaceholder: boolean = false
   ): string {
     const sessionListHtml = this.generateSessionListHtml(allSessions, this.selectedSessionId);
 
-    const chatViewHtml = this.generateReaderHtml(activeSession, messages, threadSessions, configState);
+    const chatViewHtml = this.generateReaderHtml(activeSession, messages, threadSessions, configState, isLoadingPlaceholder);
 
     const cfg = configState || {
       machineName: '',
@@ -1083,16 +1447,18 @@ export class DashboardWebviewPanel {
       ? `Filter chat history by current workspace (${activeWsDisplayName})`
       : 'Filter chat history by current workspace';
 
-    let extensionVersion = '0.5.1';
-    try {
-      const pkgPath = path.join(this.extensionUri.fsPath, 'package.json');
-      if (fs.existsSync(pkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        if (pkg.version) {
-          extensionVersion = pkg.version;
+    if (!DashboardWebviewPanel.cachedVersion) {
+      try {
+        const pkgPath = path.join(this.extensionUri.fsPath, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          DashboardWebviewPanel.cachedVersion = pkg.version || '0.5.1';
         }
+      } catch {
+        DashboardWebviewPanel.cachedVersion = '0.5.1';
       }
-    } catch {}
+    }
+    const extensionVersion = DashboardWebviewPanel.cachedVersion || '0.5.1';
 
     const syncInfo = GitSyncService.getInstance().getLastSyncInfo();
     const lastSyncTimeStr = syncInfo.lastSyncTimestamp > 0 && syncInfo.lastSyncTimeStr
@@ -1102,18 +1468,13 @@ export class DashboardWebviewPanel {
       ? `Sync Brain Hub with GitHub (Last sync: ${lastSyncTimeStr})`
       : 'Sync Brain Hub with GitHub (Pull & Push)';
 
-    let codiconCssContent = '';
-    try {
-      const codiconPath = path.join(this.extensionUri.fsPath, 'media', 'codicon.css');
-      if (fs.existsSync(codiconPath)) {
-        codiconCssContent = fs.readFileSync(codiconPath, 'utf8');
-      }
-    } catch {}
-
     const searchPlaceholder = allSessions.length > 0
       ? `Search ${allSessions.length} chats, or ID...`
       : 'Search chats, or ID...';
 
+    const codiconUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'codicon.css')
+    );
     const mermaidUri = this.panel.webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'mermaid.min.js')
     );
@@ -1123,20 +1484,20 @@ export class DashboardWebviewPanel {
 
     return `
       <!DOCTYPE html>
-      <html lang="en">
+      <html lang="en" style="background-color: var(--vscode-editor-background, #1e1e1e); color: var(--vscode-editor-foreground, #cccccc);">
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Brain Hub for Antigravity</title>
-        <script src="${mermaidUri}"></script>
-        <script>
-          if (typeof mermaid === 'undefined') {
-            document.write('<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"><\\/script>');
-          }
-        </script>
         <style>
-          ${codiconCssContent}
+          html, body {
+            background-color: var(--vscode-editor-background, #1e1e1e) !important;
+            color: var(--vscode-editor-foreground, #cccccc) !important;
+            margin: 0;
+            padding: 0;
+          }
         </style>
+        <link rel="stylesheet" href="${codiconUri}">
         <style>
           ${HIGHLIGHT_CSS}
         </style>
@@ -1175,6 +1536,8 @@ export class DashboardWebviewPanel {
             --radius-lg: 10px;
             --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
             --font-mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+            --shimmer-bg: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.12));
+            --shimmer-highlight: var(--vscode-editor-inactiveSelectionBackground, rgba(128, 128, 128, 0.22));
           }
 
           body.vscode-light {
@@ -1196,6 +1559,64 @@ export class DashboardWebviewPanel {
             flex-direction: column;
             overflow: hidden;
             position: relative;
+          }
+
+          @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+          }
+          .skeleton-bone {
+            background: linear-gradient(90deg, var(--shimmer-bg) 25%, var(--shimmer-highlight) 50%, var(--shimmer-bg) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.8s infinite ease-in-out;
+            border-radius: 4px;
+          }
+          .reader-loading-skeleton {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            padding: 24px;
+            width: 100%;
+            max-width: 900px;
+            margin: 0 auto;
+          }
+          .reader-skeleton-card {
+            display: flex;
+            gap: 14px;
+            padding: 18px 20px;
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border-color);
+          }
+          .reader-skeleton-card.user-card {
+            background: var(--user-bubble-bg);
+            border-color: var(--user-bubble-border);
+          }
+          .reader-skeleton-card.ai-card {
+            background: var(--ai-bubble-bg);
+            border-color: var(--ai-bubble-border);
+          }
+          .sk-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            flex-shrink: 0;
+          }
+          .sk-card-content {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            flex: 1;
+          }
+          .sk-line-header {
+            height: 14px;
+            width: 130px;
+          }
+          .sk-line-body {
+            height: 12px;
+            width: 92%;
+          }
+          .sk-line-body.sk-short {
+            width: 50%;
           }
 
           .dashboard-header {
@@ -3480,6 +3901,11 @@ export class DashboardWebviewPanel {
                 if (btn) btn.classList.toggle('active', isHideEmptyActive);
               }
               filterSessions();
+            } else if (message.command === 'updateGitRemoteUrl') {
+              const el = document.getElementById('cfgGitRemoteUrl');
+              if (el && message.remoteUrl) {
+                el.value = message.remoteUrl;
+              }
             } else if (message.command === 'setBrainPath') {
               const el = document.getElementById('cfgBrainPath');
               if (el && message.path) {
@@ -3814,8 +4240,10 @@ export class DashboardWebviewPanel {
                 group.classList.add('hidden');
               } else {
                 group.classList.remove('hidden');
-                if (query || isWorkspaceFilterActive || isHideEmptyActive) {
+                if (query) {
                   group.open = true;
+                }
+                if (query || isWorkspaceFilterActive || isHideEmptyActive) {
                   if (countBadge) {
                     countBadge.textContent = visibleInGroup + '/' + totalInGroup;
                   }
@@ -4226,8 +4654,29 @@ export class DashboardWebviewPanel {
             return sanitizedLines.join('\\n');
           }
 
+          let mermaidLoadingPromise = null;
+          function loadMermaidScript() {
+            if (typeof mermaid !== 'undefined') return Promise.resolve(true);
+            if (mermaidLoadingPromise) return mermaidLoadingPromise;
+            mermaidLoadingPromise = new Promise((resolve) => {
+              const s = document.createElement('script');
+              s.src = '${mermaidUri}';
+              s.onload = () => resolve(true);
+              s.onerror = () => resolve(false);
+              document.head.appendChild(s);
+            });
+            return mermaidLoadingPromise;
+          }
+
           async function renderMermaidDiagrams() {
-            if (typeof mermaid === 'undefined') return;
+            const pending = document.querySelectorAll('.mermaid-container:not(.rendered)');
+            if (pending.length === 0) return;
+
+            if (typeof mermaid === 'undefined') {
+              const ok = await loadMermaidScript();
+              if (!ok || typeof mermaid === 'undefined') return;
+            }
+
             try {
               mermaid.initialize({
                 startOnLoad: false,
@@ -4455,6 +4904,10 @@ export class DashboardWebviewPanel {
               };
             }
           }, 200);
+
+          try {
+            vscode.postMessage({ command: 'dashboardReady' });
+          } catch (e) {}
         </script>
       </body>
       </html>
@@ -4465,7 +4918,8 @@ export class DashboardWebviewPanel {
     activeSession: ChatSession | undefined,
     messages: ChatMessage[],
     threadSessions: ChatSession[],
-    configState?: AppConfigState
+    configState?: AppConfigState,
+    isLoadingPlaceholder: boolean = false
   ): string {
     if (!activeSession) {
       return `
@@ -4553,9 +5007,47 @@ export class DashboardWebviewPanel {
       `;
     }
 
-    const displayMessages = isNewestFirst ? [...messages].reverse() : [...messages];
-    const groupedItems = this.groupMessages(displayMessages);
-    const renderedMessages = groupedItems.map((item) => this.renderMessageItem(item, isToolsExpanded, isAiStepsExpanded)).join('\n');
+    let renderedMessages = '';
+    if (isLoadingPlaceholder) {
+      renderedMessages = `
+        <div class="reader-loading-skeleton">
+          <div class="reader-skeleton-card user-card">
+            <div class="skeleton-bone sk-avatar"></div>
+            <div class="sk-card-content">
+              <div class="skeleton-bone sk-line-header"></div>
+              <div class="skeleton-bone sk-line-body"></div>
+              <div class="skeleton-bone sk-line-body sk-short"></div>
+            </div>
+          </div>
+          <div class="reader-skeleton-card ai-card">
+            <div class="skeleton-bone sk-avatar"></div>
+            <div class="sk-card-content">
+              <div class="skeleton-bone sk-line-header"></div>
+              <div class="skeleton-bone sk-line-body"></div>
+              <div class="skeleton-bone sk-line-body"></div>
+              <div class="skeleton-bone sk-line-body sk-short"></div>
+            </div>
+          </div>
+          <div class="reader-skeleton-card user-card">
+            <div class="skeleton-bone sk-avatar"></div>
+            <div class="sk-card-content">
+              <div class="skeleton-bone sk-line-header"></div>
+              <div class="skeleton-bone sk-line-body"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    } else if (messages.length > 0) {
+      const displayMessages = isNewestFirst ? [...messages].reverse() : [...messages];
+      const groupedItems = this.groupMessages(displayMessages);
+      renderedMessages = groupedItems.map((item) => this.renderMessageItem(item, isToolsExpanded, isAiStepsExpanded)).join('\n');
+    } else {
+      renderedMessages = `
+        <div class="empty-reader" style="padding: 48px 16px; text-align: center; color: var(--text-secondary);">
+          <p>No messages recorded in this conversation session.</p>
+        </div>
+      `;
+    }
 
     return `
       <div id="readerTopSentinel" style="position: absolute; top: 0; left: 0; width: 100%; height: 35px; pointer-events: none; opacity: 0; z-index: -1;"></div>

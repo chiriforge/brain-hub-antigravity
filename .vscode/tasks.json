@@ -1,14 +1,35 @@
 {
   "version": "2.0.0",
+  "windows": {
+    "options": {
+      "env": {
+        "PATH": "${env:LOCALAPPDATA}\\Programs\\nodejs;C:\\Users\\LeMinhHung\\AppData\\Local\\Programs\\nodejs;${env:ProgramFiles}\\nodejs;${env:PATH}"
+      }
+    }
+  },
   "tasks": [
     {
-      "type": "npm",
-      "script": "build",
+      "label": "npm: build",
+      "type": "shell",
+      "command": "npm run build",
       "group": {
         "kind": "build",
         "isDefault": true
       },
       "problemMatcher": "$tsc"
+    },
+    {
+      "label": "npm: compile",
+      "type": "shell",
+      "command": "npm run compile",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "npm: watch",
+      "type": "shell",
+      "command": "npm run watch",
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true
     }
   ]
 }

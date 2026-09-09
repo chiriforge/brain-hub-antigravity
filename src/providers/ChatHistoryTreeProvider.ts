@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { ChatSession, TimeGroupKey } from '../models/types';
 import { SessionScanner } from '../services/SessionScanner';
 
-export type TreeItemType = TimeGroupTreeItem | SessionTreeItem;
+export type TreeItemType = TimeGroupTreeItem | SessionTreeItem | LoadingTreeItem;
 
 export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItemType> {
   private _onDidChangeTreeData: vscode.EventEmitter<TreeItemType | undefined | null | void> = new vscode.EventEmitter<
@@ -13,15 +13,25 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
 
   private isWorkspaceFiltered: boolean = false;
   private cachedSessions: ChatSession[] = [];
+  private isScanning: boolean = false;
 
   constructor() {
     const defaultFilter = vscode.workspace
-      .getConfiguration('antigravityHistory')
+      .getConfiguration('brainHub')
       .get<boolean>('filterWorkspaceByDefault', false);
     this.isWorkspaceFiltered = defaultFilter;
+
+    const scanner = SessionScanner.getInstance();
+    if (scanner.hasValidCache()) {
+      this.cachedSessions = scanner.getCachedSessions();
+    }
   }
 
   public refresh(): void {
+    const scanner = SessionScanner.getInstance();
+    if (scanner.hasValidCache()) {
+      this.cachedSessions = scanner.getCachedSessions();
+    }
     this._onDidChangeTreeData.fire();
   }
 
@@ -37,7 +47,7 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
   }
 
   public async toggleHideEmptyFilter(): Promise<boolean> {
-    const config = vscode.workspace.getConfiguration('antigravityHistory');
+    const config = vscode.workspace.getConfiguration('brainHub');
     const current = config.get<boolean>('hideEmptySessions', true);
     const updated = !current;
     await config.update('hideEmptySessions', updated, vscode.ConfigurationTarget.Global);
@@ -53,70 +63,32 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
     return element;
   }
 
-  public async getChildren(element?: TreeItemType): Promise<TreeItemType[]> {
+  public getChildren(element?: TreeItemType): vscode.ProviderResult<TreeItemType[]> {
     const scanner = SessionScanner.getInstance();
 
     if (!element) {
-      this.cachedSessions = await scanner.scanSessions();
-
-      let sessions = this.cachedSessions;
-
-      if (this.isWorkspaceFiltered) {
-        sessions = this.filterSessionsByWorkspace(sessions);
+      if (this.cachedSessions.length === 0) {
+        if (scanner.hasValidCache()) {
+          this.cachedSessions = scanner.getCachedSessions();
+        } else {
+          if (!this.isScanning) {
+            this.isScanning = true;
+            scanner
+              .scanSessions()
+              .then((sessions) => {
+                this.cachedSessions = sessions;
+                this.isScanning = false;
+                this._onDidChangeTreeData.fire();
+              })
+              .catch(() => {
+                this.isScanning = false;
+              });
+          }
+          return [new LoadingTreeItem()];
+        }
       }
 
-      if (sessions.length === 0) {
-        return [];
-      }
-
-      const groups = this.groupSessionsByTime(sessions);
-      const groupItems: TimeGroupTreeItem[] = [];
-
-      if (groups.today.length > 0) {
-        groupItems.push(
-          new TimeGroupTreeItem(
-            'today',
-            `Today (${groups.today.length})`,
-            groups.today,
-            vscode.TreeItemCollapsibleState.Expanded
-          )
-        );
-      }
-
-      if (groups.yesterday.length > 0) {
-        groupItems.push(
-          new TimeGroupTreeItem(
-            'yesterday',
-            `Yesterday (${groups.yesterday.length})`,
-            groups.yesterday,
-            vscode.TreeItemCollapsibleState.Expanded
-          )
-        );
-      }
-
-      if (groups.week.length > 0) {
-        groupItems.push(
-          new TimeGroupTreeItem(
-            'week',
-            `Previous 7 Days (${groups.week.length})`,
-            groups.week,
-            vscode.TreeItemCollapsibleState.Collapsed
-          )
-        );
-      }
-
-      if (groups.older.length > 0) {
-        groupItems.push(
-          new TimeGroupTreeItem(
-            'older',
-            `Older (${groups.older.length})`,
-            groups.older,
-            vscode.TreeItemCollapsibleState.Collapsed
-          )
-        );
-      }
-
-      return groupItems;
+      return this.buildRootGroups(this.cachedSessions);
     }
 
     if (element instanceof TimeGroupTreeItem) {
@@ -124,6 +96,101 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 
     return [];
+  }
+
+  private buildRootGroups(rawSessions: ChatSession[]): TimeGroupTreeItem[] {
+    let sessions = rawSessions;
+
+    if (this.isWorkspaceFiltered) {
+      sessions = this.filterSessionsByWorkspace(sessions);
+    }
+
+    if (sessions.length === 0) {
+      return [];
+    }
+
+    const groups = this.groupSessionsByTime(sessions);
+    const groupItems: TimeGroupTreeItem[] = [];
+
+    const config = vscode.workspace.getConfiguration('brainHub');
+    const expansionMode = config.get<string>('defaultGroupExpansion', 'smart');
+
+    const hasToday = groups.today.length > 0;
+    const hasYesterday = groups.yesterday.length > 0;
+    const hasWeek = groups.week.length > 0;
+    const hasOlder = groups.older.length > 0;
+
+    const getCollapsibleState = (key: TimeGroupKey): vscode.TreeItemCollapsibleState => {
+      if (expansionMode === 'allExpanded') {
+        return vscode.TreeItemCollapsibleState.Expanded;
+      }
+      if (expansionMode === 'collapsed') {
+        return vscode.TreeItemCollapsibleState.Collapsed;
+      }
+      // 'smart' mode:
+      if (hasToday || hasYesterday) {
+        return key === 'today' || key === 'yesterday'
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed;
+      }
+      if (hasWeek) {
+        return key === 'week'
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed;
+      }
+      if (hasOlder) {
+        return key === 'older'
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed;
+      }
+      return vscode.TreeItemCollapsibleState.Collapsed;
+    };
+
+    if (hasToday) {
+      groupItems.push(
+        new TimeGroupTreeItem(
+          'today',
+          `Today (${groups.today.length})`,
+          groups.today,
+          getCollapsibleState('today')
+        )
+      );
+    }
+
+    if (hasYesterday) {
+      groupItems.push(
+        new TimeGroupTreeItem(
+          'yesterday',
+          `Yesterday (${groups.yesterday.length})`,
+          groups.yesterday,
+          getCollapsibleState('yesterday')
+        )
+      );
+    }
+
+      if (hasWeek) {
+        groupItems.push(
+          new TimeGroupTreeItem(
+            'week',
+            `Previous 7 Days (${groups.week.length})`,
+            groups.week,
+            getCollapsibleState('week')
+          )
+        );
+      }
+
+      if (hasOlder) {
+        groupItems.push(
+          new TimeGroupTreeItem(
+            'older',
+            `Older (${groups.older.length})`,
+            groups.older,
+            getCollapsibleState('older')
+          )
+        );
+      }
+
+      return groupItems;
   }
 
   private filterSessionsByWorkspace(sessions: ChatSession[]): ChatSession[] {
@@ -259,7 +326,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     }
 
     this.command = {
-      command: 'antigravityHistory.openChat',
+      command: 'brainHub.openChat',
       title: 'Open Chat in Brain Hub',
       arguments: [session]
     };
@@ -288,5 +355,14 @@ export class SessionTreeItem extends vscode.TreeItem {
     }
 
     return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+}
+
+export class LoadingTreeItem extends vscode.TreeItem {
+  constructor(message: string = 'Scanning Antigravity sessions...') {
+    super(message, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon('loading~spin');
+    this.description = 'Please wait...';
+    this.contextValue = 'loading';
   }
 }

@@ -19,10 +19,11 @@ export function activate(context: vscode.ExtensionContext) {
   // 1. Initialize Persistent Index Cache Storage
   const scanner = SessionScanner.getInstance();
   scanner.setStoragePath(context.globalStorageUri.fsPath);
+  scanner.loadCacheFromDisk();
 
   const treeProvider = new ChatHistoryTreeProvider();
   DashboardWebviewPanel.setTreeProvider(treeProvider);
-  const treeView = vscode.window.createTreeView('antigravityHistory.treeView', {
+  const treeView = vscode.window.createTreeView('brainHub.treeView', {
     treeDataProvider: treeProvider,
     showCollapseAll: true
   });
@@ -32,10 +33,10 @@ export function activate(context: vscode.ExtensionContext) {
   treeView.onDidChangeVisibility((e) => {
     if (e.visible) {
       const autoOpen = vscode.workspace
-        .getConfiguration('antigravityHistory')
+        .getConfiguration('brainHub')
         .get<boolean>('autoOpenDashboardOnSidebarFocus', true);
       if (autoOpen) {
-        vscode.commands.executeCommand('antigravityHistory.openDashboard');
+        vscode.commands.executeCommand('brainHub.openDashboard');
       }
     }
   });
@@ -44,7 +45,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 2. Setup Status Bar Item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.command = 'antigravityHistory.syncNow';
+  statusBarItem.command = 'brainHub.syncNow';
   statusBarItem.text = '$(github) Brain Hub Sync';
 
   const updateStatusBar = () => {
@@ -103,25 +104,28 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 4. Background Startup Execution, Auto-Scan & Auto-Sync
   const autoSyncOnStartup = vscode.workspace
-    .getConfiguration('antigravityHistory')
+    .getConfiguration('brainHub')
     .get<boolean>('autoSyncOnStartup', true);
 
   const autoSyncIntervalMinutes = vscode.workspace
-    .getConfiguration('antigravityHistory')
+    .getConfiguration('brainHub')
     .get<number>('autoSyncIntervalMinutes', 30);
 
   const backgroundScanIntervalMinutes = vscode.workspace
-    .getConfiguration('antigravityHistory')
+    .getConfiguration('brainHub')
     .get<number>('backgroundScanIntervalMinutes', 5);
 
   const enableRealtimeWatcher = vscode.workspace
-    .getConfiguration('antigravityHistory')
+    .getConfiguration('brainHub')
     .get<boolean>('enableRealtimeWatcher', true);
 
-  // Pre-scan in background to warm up memory cache
+  // Pre-scan in background to warm up memory cache after UI has stabilized
   setTimeout(async () => {
-    await scanner.scanSessions();
-    onSessionsDataChanged();
+    const prevCount = scanner.getCachedSessions().length;
+    const fresh = await scanner.scanSessions();
+    if (fresh.length !== prevCount) {
+      onSessionsDataChanged();
+    }
 
     if (autoSyncOnStartup) {
       statusBarItem.text = '$(sync~spin) Brain Hub Syncing...';
@@ -129,7 +133,7 @@ export function activate(context: vscode.ExtensionContext) {
       statusBarItem.text = '$(github) Brain Hub Sync';
       updateStatusBar();
     }
-  }, 1000);
+  }, 5000);
 
   // Start real-time shallow folder watcher for new chat sessions
   if (enableRealtimeWatcher) {
@@ -151,7 +155,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.onDidChangeWindowState(async (state) => {
       if (state.focused) {
         const autoRefreshOnFocus = vscode.workspace
-          .getConfiguration('antigravityHistory')
+          .getConfiguration('brainHub')
           .get<boolean>('autoRefreshOnWindowFocus', true);
         if (autoRefreshOnFocus) {
           await scanner.scanSessions(false);
@@ -164,23 +168,23 @@ export function activate(context: vscode.ExtensionContext) {
   // Listen to settings changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('antigravityHistory.autoSyncIntervalMinutes')) {
+      if (e.affectsConfiguration('brainHub.autoSyncIntervalMinutes')) {
         const newInterval = vscode.workspace
-          .getConfiguration('antigravityHistory')
+          .getConfiguration('brainHub')
           .get<number>('autoSyncIntervalMinutes', 30);
         gitSync.startAutoSyncTimer(newInterval);
       }
 
-      if (e.affectsConfiguration('antigravityHistory.backgroundScanIntervalMinutes')) {
+      if (e.affectsConfiguration('brainHub.backgroundScanIntervalMinutes')) {
         const newScanInterval = vscode.workspace
-          .getConfiguration('antigravityHistory')
+          .getConfiguration('brainHub')
           .get<number>('backgroundScanIntervalMinutes', 5);
         scanner.startBackgroundScanTimer(newScanInterval, onSessionsDataChanged);
       }
 
-      if (e.affectsConfiguration('antigravityHistory.enableRealtimeWatcher')) {
+      if (e.affectsConfiguration('brainHub.enableRealtimeWatcher')) {
         const enabled = vscode.workspace
-          .getConfiguration('antigravityHistory')
+          .getConfiguration('brainHub')
           .get<boolean>('enableRealtimeWatcher', true);
         if (enabled) {
           scanner.startRealtimeWatcher(onSessionsDataChanged);
@@ -188,12 +192,16 @@ export function activate(context: vscode.ExtensionContext) {
           scanner.stopRealtimeWatcher();
         }
       }
+
+      if (e.affectsConfiguration('brainHub.defaultGroupExpansion')) {
+        onSessionsDataChanged();
+      }
     })
   );
 
   // Command: Open Settings UI
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.openSettings', async () => {
+    vscode.commands.registerCommand('brainHub.openSettings', async () => {
       if (DashboardWebviewPanel.currentPanel) {
         DashboardWebviewPanel.currentPanel.reveal();
         DashboardWebviewPanel.currentPanel.openSettingsModal();
@@ -205,7 +213,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Open Brain Hub Dashboard (Ctrl+Alt+D)
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.openDashboard', async (item?: SessionTreeItem | ChatSession | string) => {
+    vscode.commands.registerCommand('brainHub.openDashboard', async (item?: SessionTreeItem | ChatSession | string) => {
       let sessionId: string | undefined;
       if (item instanceof SessionTreeItem) {
         sessionId = item.session.id;
@@ -220,7 +228,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Sync with GitHub (1-Click Pull & Push)
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.syncNow', async () => {
+    vscode.commands.registerCommand('brainHub.syncNow', async () => {
       statusBarItem.text = '$(sync~spin) Syncing...';
       try {
         await gitSync.syncWithRemote();
@@ -237,7 +245,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Setup GitHub Backup Repository
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.setupGitSync', async () => {
+    vscode.commands.registerCommand('brainHub.setupGitSync', async () => {
       await gitSync.promptSetup();
       treeProvider.refresh();
       if (DashboardWebviewPanel.currentPanel) {
@@ -248,7 +256,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Check GitHub Sync Status
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.checkGitStatus', async () => {
+    vscode.commands.registerCommand('brainHub.checkGitStatus', async () => {
       const status = await gitSync.getStatus();
       if (!status.isRepo) {
         const opt = await vscode.window.showInformationMessage(
@@ -282,7 +290,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Refresh History
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.refresh', async () => {
+    vscode.commands.registerCommand('brainHub.refresh', async () => {
       await scanner.scanSessions(true);
       treeProvider.refresh();
       if (DashboardWebviewPanel.currentPanel) {
@@ -294,7 +302,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Quick Search
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.searchChat', async () => {
+    vscode.commands.registerCommand('brainHub.searchChat', async () => {
       const panel = DashboardWebviewPanel.createOrShow(context.extensionUri, undefined, false, true);
       panel.focusSearchInput();
     })
@@ -302,7 +310,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Toggle Workspace Filter
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.toggleWorkspaceFilter', () => {
+    vscode.commands.registerCommand('brainHub.toggleWorkspaceFilter', () => {
       const isFiltered = treeProvider.toggleWorkspaceFilter();
       if (DashboardWebviewPanel.currentPanel) {
         DashboardWebviewPanel.currentPanel.setFiltersState(isFiltered, undefined);
@@ -317,7 +325,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Toggle Hide Empty Sessions Filter
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.toggleHideEmptySessions', async () => {
+    vscode.commands.registerCommand('brainHub.toggleHideEmptySessions', async () => {
       const isHidden = await treeProvider.toggleHideEmptyFilter();
       if (DashboardWebviewPanel.currentPanel) {
         DashboardWebviewPanel.currentPanel.setFiltersState(undefined, isHidden);
@@ -332,7 +340,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Clean Up Empty Sessions
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.cleanEmptySessions', async () => {
+    vscode.commands.registerCommand('brainHub.cleanEmptySessions', async () => {
       const emptyDirs = await scanner.findEmptySessionDirs();
       if (emptyDirs.length === 0) {
         vscode.window.showInformationMessage('No empty chat sessions found. Your chat history is already clean! ✨');
@@ -360,7 +368,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Delete Individual Chat Session
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.deleteSession', async (item?: SessionTreeItem | ChatSession | string) => {
+    vscode.commands.registerCommand('brainHub.deleteSession', async (item?: SessionTreeItem | ChatSession | string) => {
       let session: ChatSession | undefined;
       let sessionId: string | undefined;
 
@@ -406,7 +414,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Open Chat Viewer (Dedicated Chat Tab)
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.openChat', async (item?: SessionTreeItem | ChatSession | string) => {
+    vscode.commands.registerCommand('brainHub.openChat', async (item?: SessionTreeItem | ChatSession | string) => {
       let session: ChatSession | undefined;
       if (item instanceof SessionTreeItem) {
         session = item.session;
@@ -427,7 +435,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Copy Resume Prompt
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.copyResumePrompt', async (item?: SessionTreeItem | ChatSession) => {
+    vscode.commands.registerCommand('brainHub.copyResumePrompt', async (item?: SessionTreeItem | ChatSession) => {
       const session = item instanceof SessionTreeItem ? item.session : item;
       if (session) {
         const prompt = `Hãy đọc lại ngữ cảnh hội thoại trước đó của phiên làm việc tại thư mục:\n\`${session.path}\`\n(Session ID: \`${session.id}\` - Chủ đề: "${session.title}")\nvà tiếp tục hỗ trợ tôi.`;
@@ -439,7 +447,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Copy Session ID
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.copySessionId', async (item?: SessionTreeItem | ChatSession) => {
+    vscode.commands.registerCommand('brainHub.copySessionId', async (item?: SessionTreeItem | ChatSession) => {
       const session = item instanceof SessionTreeItem ? item.session : item;
       if (session) {
         await vscode.env.clipboard.writeText(session.id);
@@ -450,7 +458,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Export Markdown
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.exportMarkdown', async (item?: SessionTreeItem | ChatSession) => {
+    vscode.commands.registerCommand('brainHub.exportMarkdown', async (item?: SessionTreeItem | ChatSession) => {
       const session = item instanceof SessionTreeItem ? item.session : item;
       if (session) {
         await MarkdownExporter.exportSession(session);
@@ -460,7 +468,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Open Folder in Explorer
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.openFolder', async (item?: SessionTreeItem | ChatSession) => {
+    vscode.commands.registerCommand('brainHub.openFolder', async (item?: SessionTreeItem | ChatSession) => {
       const session = item instanceof SessionTreeItem ? item.session : item;
       if (session) {
         await vscode.env.openExternal(vscode.Uri.file(session.path));
@@ -470,14 +478,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Export Project Docs to .docs/
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.exportProjectDocs', async () => {
+    vscode.commands.registerCommand('brainHub.exportProjectDocs', async () => {
       const activeWs = ProjectDocsArchiver.getActiveWorkspacePath();
       if (!activeWs) {
         vscode.window.showWarningMessage('Please open a workspace folder first to archive project docs.');
         return;
       }
 
-      const config = vscode.workspace.getConfiguration('antigravityHistory');
+      const config = vscode.workspace.getConfiguration('brainHub');
       let chosenMode = config.get<string>('archiver.defaultMode', 'askEachTime');
 
       if (chosenMode === 'askEachTime') {
@@ -548,7 +556,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Batch Export All Workspace Sessions to Markdown
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.exportAllWorkspaceSessions', async () => {
+    vscode.commands.registerCommand('brainHub.exportAllWorkspaceSessions', async () => {
       const activeWs = ProjectDocsArchiver.getActiveWorkspacePath();
       const allSessions = await scanner.scanSessions();
       let targetSessions = allSessions;
@@ -573,7 +581,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Brain Hub: Open Rich Markdown Preview (Mermaid & KaTeX)
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.openRichMarkdownPreview', async (uri?: vscode.Uri) => {
+    vscode.commands.registerCommand('brainHub.openRichMarkdownPreview', async (uri?: vscode.Uri) => {
       let targetPath: string | undefined;
       if (uri instanceof vscode.Uri) {
         targetPath = uri.fsPath;
@@ -591,7 +599,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Command: Open with IDE Markdown Preview
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityHistory.openIdeMarkdownPreview', async (uri?: vscode.Uri) => {
+    vscode.commands.registerCommand('brainHub.openIdeMarkdownPreview', async (uri?: vscode.Uri) => {
       let targetUri = uri;
       if (!targetUri && vscode.window.activeTextEditor) {
         targetUri = vscode.window.activeTextEditor.document.uri;

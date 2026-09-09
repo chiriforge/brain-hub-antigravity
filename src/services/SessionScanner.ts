@@ -121,48 +121,137 @@ export class SessionScanner {
     } catch {}
   }
 
+  private getCandidateCacheFilePaths(): string[] {
+    const candidates: string[] = [];
+    if (this.persistentStoragePath) {
+      candidates.push(path.join(this.persistentStoragePath, 'sessions_index_cache.json'));
+    }
+    const brainDir = this.getDefaultBrainDirectory();
+    if (brainDir) {
+      candidates.push(path.join(brainDir, '.sessions_index_cache.json'));
+    }
+    const appData = process.env.APPDATA;
+    if (appData) {
+      candidates.push(path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+      candidates.push(path.join(appData, 'Code', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+      candidates.push(path.join(appData, 'Code - Insiders', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+      candidates.push(path.join(appData, 'Cursor', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+    }
+    const userHome = process.env.USERPROFILE || process.env.HOME;
+    if (userHome) {
+      candidates.push(path.join(userHome, '.gemini', 'antigravity-ide', 'brain', '.sessions_index_cache.json'));
+      candidates.push(path.join(userHome, '.config', 'Antigravity IDE', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+      candidates.push(path.join(userHome, '.config', 'Code', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+      candidates.push(path.join(userHome, 'Library', 'Application Support', 'Antigravity IDE', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+      candidates.push(path.join(userHome, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'hungle-vn.brain-hub-antigravity', 'sessions_index_cache.json'));
+    }
+    return Array.from(new Set(candidates.filter(Boolean)));
+  }
+
   public loadCacheFromDisk(forceReload: boolean = false): void {
     try {
-      const cacheFile = this.getCacheFilePath();
-      if (!fs.existsSync(cacheFile)) {
-        return;
-      }
-      const stats = fs.statSync(cacheFile);
-      if (!forceReload && this.isCacheLoadedFromDisk && stats.mtimeMs <= this.lastDiskCacheMtime) {
-        return;
-      }
-      const raw = fs.readFileSync(cacheFile, 'utf8');
-      const data = JSON.parse(raw);
-      if (Array.isArray(data)) {
-        if (forceReload || stats.mtimeMs > this.lastDiskCacheMtime) {
-          this.sessionCache.clear();
-        }
-        for (const item of data) {
-          if (item && item.session && item.session.id && item.mtime) {
-            // Invalidate cached session if its workspaceName or workspacePath is invalid
-            if (item.session.workspacePath && !this.isValidWorkspacePath(item.session.workspacePath)) {
-              continue;
-            }
-            if (item.session.workspaceName && (!item.session.workspacePath || !this.isValidWorkspacePath(item.session.workspacePath))) {
-              continue;
-            }
-            if (item.session.machineName && !this.isValidMachineName(item.session.machineName)) {
-              item.session.machineName = this.getLocalMachineName();
-            }
-            item.session.lastModified = new Date(item.session.lastModified);
-            if (item.session.createdAt) {
-              item.session.createdAt = new Date(item.session.createdAt);
-            }
-            const key = `${item.session.id}_${item.session.path}`;
-            this.sessionCache.set(key, item);
+      const candidates = this.getCandidateCacheFilePaths();
+      let chosenFile: string | null = null;
+      let chosenData: any[] | null = null;
+      let chosenStats: fs.Stats | null = null;
+
+      const primaryFile = this.getCacheFilePath();
+      if (fs.existsSync(primaryFile)) {
+        try {
+          const stats = fs.statSync(primaryFile);
+          if (!forceReload && this.isCacheLoadedFromDisk && stats.mtimeMs <= this.lastDiskCacheMtime) {
+            return;
           }
-        }
-        this.lastDiskCacheMtime = stats.mtimeMs;
+          const raw = fs.readFileSync(primaryFile, 'utf8');
+          const data = JSON.parse(raw);
+          if (Array.isArray(data) && data.length > 0) {
+            chosenFile = primaryFile;
+            chosenData = data;
+            chosenStats = stats;
+          }
+        } catch {}
       }
+
+      // If primary cache is missing or empty, search all candidate paths
+      if (!chosenData || chosenData.length === 0) {
+        let maxCount = -1;
+        for (const cand of candidates) {
+          if (cand === primaryFile || !fs.existsSync(cand)) continue;
+          try {
+            const raw = fs.readFileSync(cand, 'utf8');
+            const data = JSON.parse(raw);
+            if (Array.isArray(data) && data.length > maxCount) {
+              maxCount = data.length;
+              chosenFile = cand;
+              chosenData = data;
+              chosenStats = fs.statSync(cand);
+            }
+          } catch {}
+        }
+      }
+
+      if (!chosenData || !chosenStats) {
+        return;
+      }
+
+      if (forceReload || (chosenStats && chosenStats.mtimeMs > this.lastDiskCacheMtime)) {
+        this.sessionCache.clear();
+      }
+
+      for (const item of chosenData) {
+        if (item && item.session && item.session.id && item.mtime) {
+          // Invalidate cached session if its workspaceName or workspacePath is invalid
+          if (item.session.workspacePath && !this.isValidWorkspacePath(item.session.workspacePath)) {
+            continue;
+          }
+          if (item.session.workspaceName && (!item.session.workspacePath || !this.isValidWorkspacePath(item.session.workspacePath))) {
+            continue;
+          }
+          if (item.session.machineName && !this.isValidMachineName(item.session.machineName)) {
+            item.session.machineName = this.getLocalMachineName();
+          }
+          item.session.lastModified = new Date(item.session.lastModified);
+          if (item.session.createdAt) {
+            item.session.createdAt = new Date(item.session.createdAt);
+          }
+          const key = `${item.session.id}_${item.session.path}`;
+          this.sessionCache.set(key, item);
+        }
+      }
+      this.lastDiskCacheMtime = chosenStats.mtimeMs;
       this.isCacheLoadedFromDisk = true;
+
+      // Seed primary cache immediately if we loaded from a fallback candidate
+      if (chosenFile !== primaryFile && this.sessionCache.size > 0) {
+        this.saveCacheToDisk();
+      }
     } catch (err) {
       console.warn('Could not load persistent session cache from disk:', err);
     }
+  }
+
+  public hasValidCache(): boolean {
+    if (!this.isCacheLoadedFromDisk) {
+      this.loadCacheFromDisk();
+    }
+    return this.sessionCache.size > 0;
+  }
+
+  public getCachedSessions(includeEmpty?: boolean): ChatSession[] {
+    if (!this.isCacheLoadedFromDisk) {
+      this.loadCacheFromDisk();
+    }
+    const sessionMap = new Map<string, ChatSession>();
+    for (const item of this.sessionCache.values()) {
+      if (item && item.session) {
+        const existing = sessionMap.get(item.session.id);
+        if (!existing || item.session.lastModified.getTime() > existing.lastModified.getTime()) {
+          sessionMap.set(item.session.id, item.session);
+        }
+      }
+    }
+    const sessions = Array.from(sessionMap.values());
+    return this.filterAndSortSessions(sessions, includeEmpty);
   }
 
   public saveCacheToDisk(): void {
@@ -192,6 +281,17 @@ export class SessionScanner {
       }
       if (fs.existsSync(cacheFile)) {
         this.lastDiskCacheMtime = fs.statSync(cacheFile).mtimeMs;
+      }
+
+      // Also mirror to shared brain root cache file so all IDE instances stay in sync
+      const brainDir = this.getDefaultBrainDirectory();
+      if (brainDir) {
+        const brainCacheFile = path.join(brainDir, '.sessions_index_cache.json');
+        if (brainCacheFile !== cacheFile) {
+          try {
+            fs.writeFileSync(brainCacheFile, rawData, 'utf8');
+          } catch {}
+        }
       }
     } catch (err) {
       console.warn('Could not save persistent session cache to disk:', err);
@@ -258,7 +358,7 @@ export class SessionScanner {
   }
 
   public getLocalMachineName(): string {
-    const configuredName = vscode.workspace.getConfiguration('antigravityHistory').get<string>('machineName');
+    const configuredName = vscode.workspace.getConfiguration('brainHub').get<string>('machineName');
     if (configuredName && configuredName.trim().length > 0) {
       return configuredName.trim();
     }
@@ -271,7 +371,7 @@ export class SessionScanner {
   }
 
   public getBrainDirectory(): string {
-    const configPath = vscode.workspace.getConfiguration('antigravityHistory').get<string>('brainPath');
+    const configPath = vscode.workspace.getConfiguration('brainHub').get<string>('brainPath');
     if (configPath && configPath.trim().length > 0) {
       return path.resolve(configPath.trim());
     }
@@ -312,7 +412,7 @@ export class SessionScanner {
     }
 
     // 3. User configured brain path
-    const customBrainPath = vscode.workspace.getConfiguration('antigravityHistory').get<string>('brainPath');
+    const customBrainPath = vscode.workspace.getConfiguration('brainHub').get<string>('brainPath');
     if (customBrainPath && customBrainPath.trim().length > 0) {
       const resolved = path.resolve(customBrainPath.trim());
       if (fs.existsSync(resolved)) {
@@ -321,7 +421,7 @@ export class SessionScanner {
     }
 
     // 4. Additional configured paths
-    const additionalPaths = vscode.workspace.getConfiguration('antigravityHistory').get<string[]>('additionalBrainPaths', []);
+    const additionalPaths = vscode.workspace.getConfiguration('brainHub').get<string[]>('additionalBrainPaths', []);
     if (Array.isArray(additionalPaths)) {
       for (const p of additionalPaths) {
         if (p && p.trim().length > 0) {
@@ -512,7 +612,7 @@ export class SessionScanner {
   private filterAndSortSessions(sessions: ChatSession[], includeEmpty?: boolean): ChatSession[] {
     this.resolveLineages(sessions);
 
-    const hideEmptyConfig = vscode.workspace.getConfiguration('antigravityHistory').get<boolean>('hideEmptySessions', true);
+    const hideEmptyConfig = vscode.workspace.getConfiguration('brainHub').get<boolean>('hideEmptySessions', true);
     const shouldHideEmpty = includeEmpty !== undefined ? !includeEmpty : hideEmptyConfig;
 
     let result = sessions;
@@ -520,7 +620,7 @@ export class SessionScanner {
       result = result.filter((s) => !this.isSessionEmpty(s));
     }
 
-    const sortBy = vscode.workspace.getConfiguration('antigravityHistory').get<string>('sessionSortBy', 'lastModified');
+    const sortBy = vscode.workspace.getConfiguration('brainHub').get<string>('sessionSortBy', 'lastModified');
     if (sortBy === 'createdAt') {
       result.sort((a, b) => (b.createdAt || b.lastModified).getTime() - (a.createdAt || a.lastModified).getTime());
     } else {

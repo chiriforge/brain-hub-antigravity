@@ -26,7 +26,7 @@ export class ProjectDocsArchiver {
     }
 
     // Resolve configuration defaults
-    const config = vscode.workspace.getConfiguration('antigravityHistory');
+    const config = vscode.workspace.getConfiguration('brainHub');
     const mode: ArchiverMode = options?.mode || config.get<ArchiverMode>('archiver.defaultMode', 'safeDocsOnly');
     const autoGitignore: boolean = options?.autoGitignore ?? config.get<boolean>('archiver.autoGitignore', true);
     const sanitizeSecrets: boolean = options?.sanitizeSecrets ?? config.get<boolean>('archiver.sanitizeSecrets', true);

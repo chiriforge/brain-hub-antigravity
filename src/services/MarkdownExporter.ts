@@ -7,7 +7,7 @@ import { SecretSanitizer } from './SecretSanitizer';
 
 export class MarkdownExporter {
   public static async exportSession(session: ChatSession): Promise<void> {
-    const config = vscode.workspace.getConfiguration('antigravityHistory');
+    const config = vscode.workspace.getConfiguration('brainHub');
     const sanitize = config.get<boolean>('archiver.sanitizeSecrets', true);
     const customPatterns = config.get<string[]>('archiver.customSecretPatterns', []);
 
@@ -63,7 +63,7 @@ export class MarkdownExporter {
       return;
     }
 
-    const config = vscode.workspace.getConfiguration('antigravityHistory');
+    const config = vscode.workspace.getConfiguration('brainHub');
     const sanitize = config.get<boolean>('archiver.sanitizeSecrets', true);
     const customPatterns = config.get<string[]>('archiver.customSecretPatterns', []);
 

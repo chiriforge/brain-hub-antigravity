@@ -4676,7 +4676,7 @@ export class DashboardWebviewPanel {
 
           function isFullMermaidDiagram(code) {
             if (!code || !code.trim()) return false;
-            const lines = code.trim().split(/\r?\n/);
+            const lines = code.trim().split(/\\r?\\n/);
             let inFrontmatter = false;
             for (let i = 0; i < lines.length; i++) {
               const trimmed = lines[i].trim();
@@ -4687,7 +4687,7 @@ export class DashboardWebviewPanel {
               }
               if (inFrontmatter) continue;
               if (trimmed.startsWith('%%')) continue;
-              return /^\s*(graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|gantt|pie|journey|gitGraph|c4context|c4container|c4component|c4dynamic|c4deployment|mindmap|timeline|quadrantChart|sankey-beta|kanban|block-beta|xychart-beta|requirement|requirementDiagram|architecture-beta|packet-beta)\b/i.test(trimmed);
+              return /^\\s*(graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|gantt|pie|journey|gitGraph|c4context|c4container|c4component|c4dynamic|c4deployment|mindmap|timeline|quadrantChart|sankey-beta|kanban|block-beta|xychart-beta|requirement|requirementDiagram|architecture-beta|packet-beta)\\b/i.test(trimmed);
             }
             return false;
           }

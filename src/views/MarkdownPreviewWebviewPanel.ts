@@ -718,9 +718,6 @@ export class MarkdownPreviewWebviewPanel {
             position: relative;
             overflow: hidden;
             cursor: grab;
-            display: flex;
-            align-items: center;
-            justify-content: center;
           }
 
           .modal-canvas-viewport.is-dragging {
@@ -729,9 +726,10 @@ export class MarkdownPreviewWebviewPanel {
 
           .modal-canvas-content {
             position: absolute;
+            left: 0;
+            top: 0;
             transform-origin: 0 0;
             will-change: transform;
-            display: inline-block;
           }
 
           .modal-canvas-content svg {
@@ -741,6 +739,8 @@ export class MarkdownPreviewWebviewPanel {
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
             padding: 24px;
+            box-sizing: content-box;
+            max-width: none !important;
           }
 
           .modal-hint-bar {
@@ -1167,6 +1167,49 @@ export class MarkdownPreviewWebviewPanel {
           let startPointerX = 0;
           let startPointerY = 0;
 
+          function getSvgNaturalDimensions(svg) {
+            let svgW = 0;
+            let svgH = 0;
+            if (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width > 0) {
+              svgW = svg.viewBox.baseVal.width;
+              svgH = svg.viewBox.baseVal.height;
+            } else if (svg.getAttribute('viewBox')) {
+              const parts = svg.getAttribute('viewBox').trim().split(/[\s,]+/);
+              if (parts.length === 4) {
+                svgW = parseFloat(parts[2]);
+                svgH = parseFloat(parts[3]);
+              }
+            }
+            if (!svgW || svgW <= 0) {
+              svgW = svg.scrollWidth || svg.clientWidth || 800;
+            }
+            if (!svgH || svgH <= 0) {
+              svgH = svg.scrollHeight || svg.clientHeight || 600;
+            }
+            return { width: svgW, height: svgH };
+          }
+
+          function applySvgNaturalDimensions(svg, content) {
+            if (!svg) return { width: 800, height: 600, totalW: 848, totalH: 648 };
+            const dims = getSvgNaturalDimensions(svg);
+            const padOffset = 48; // 24px padding on each side
+            const totalW = dims.width + padOffset;
+            const totalH = dims.height + padOffset;
+
+            svg.style.width = dims.width + 'px';
+            svg.style.height = dims.height + 'px';
+            svg.style.maxWidth = 'none';
+            svg.style.minWidth = dims.width + 'px';
+            svg.style.minHeight = dims.height + 'px';
+
+            if (content) {
+              content.style.width = totalW + 'px';
+              content.style.height = totalH + 'px';
+            }
+
+            return { width: dims.width, height: dims.height, totalW: totalW, totalH: totalH };
+          }
+
           function updateModalTransform() {
             const content = document.getElementById('modalContent');
             const badge = document.getElementById('zoomBadge');
@@ -1186,15 +1229,29 @@ export class MarkdownPreviewWebviewPanel {
                 const modal = document.getElementById('diagramModal');
                 const content = document.getElementById('modalContent');
                 content.innerHTML = svg.outerHTML;
+
+                const clonedSvg = content.querySelector('svg');
+                if (clonedSvg) {
+                  applySvgNaturalDimensions(clonedSvg, content);
+                }
+
                 modal.classList.add('active');
                 modal.focus();
-                setTimeout(fitModalToScreen, 25);
+                fitModalToScreen();
+                requestAnimationFrame(fitModalToScreen);
               }
             }
           }
 
           function closeModal() {
-            document.getElementById('diagramModal').classList.remove('active');
+            const modal = document.getElementById('diagramModal');
+            if (modal) {
+              modal.classList.remove('active');
+            }
+            const content = document.getElementById('modalContent');
+            if (content) {
+              content.innerHTML = '';
+            }
           }
 
           function resetModalZoom() {
@@ -1215,7 +1272,7 @@ export class MarkdownPreviewWebviewPanel {
           function zoomAtPoint(factor, clientX, clientY) {
             const oldScale = modalScale;
             let newScale = oldScale * factor;
-            newScale = Math.max(0.1, Math.min(10, newScale));
+            newScale = Math.max(0.05, Math.min(10, newScale));
             
             modalPanX = clientX - (clientX - modalPanX) * (newScale / oldScale);
             modalPanY = clientY - (clientY - modalPanY) * (newScale / oldScale);
@@ -1230,14 +1287,11 @@ export class MarkdownPreviewWebviewPanel {
             const svg = content ? content.querySelector('svg') : null;
             if (!viewport || !svg) return;
             
+            const dims = applySvgNaturalDimensions(svg, content);
             const vRect = viewport.getBoundingClientRect();
-            let svgW = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width ? svg.viewBox.baseVal.width : svg.clientWidth;
-            let svgH = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height ? svg.viewBox.baseVal.height : svg.clientHeight;
-            if (!svgW || svgW <= 0) svgW = 800;
-            if (!svgH || svgH <= 0) svgH = 600;
 
-            modalPanX = (vRect.width - svgW * modalScale) / 2;
-            modalPanY = (vRect.height - svgH * modalScale) / 2;
+            modalPanX = (vRect.width - dims.totalW * modalScale) / 2;
+            modalPanY = (vRect.height - dims.totalH * modalScale) / 2;
           }
 
           function fitModalToScreen() {
@@ -1246,19 +1300,20 @@ export class MarkdownPreviewWebviewPanel {
             const svg = content ? content.querySelector('svg') : null;
             if (!viewport || !svg) return;
             
+            const dims = applySvgNaturalDimensions(svg, content);
             const vRect = viewport.getBoundingClientRect();
-            let svgW = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width ? svg.viewBox.baseVal.width : svg.clientWidth;
-            let svgH = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height ? svg.viewBox.baseVal.height : svg.clientHeight;
-            if (!svgW || svgW <= 0) svgW = 800;
-            if (!svgH || svgH <= 0) svgH = 600;
+            if (vRect.width <= 0 || vRect.height <= 0) return;
 
-            const pad = 100;
-            const scaleX = (vRect.width - pad) / svgW;
-            const scaleY = (vRect.height - pad) / svgH;
-            modalScale = Math.max(0.2, Math.min(1.4, Math.min(scaleX, scaleY)));
+            const pad = 80;
+            const availableW = Math.max(50, vRect.width - pad);
+            const availableH = Math.max(50, vRect.height - pad);
+
+            const scaleX = availableW / dims.totalW;
+            const scaleY = availableH / dims.totalH;
+            modalScale = Math.max(0.05, Math.min(1.5, Math.min(scaleX, scaleY)));
             
-            modalPanX = (vRect.width - svgW * modalScale) / 2;
-            modalPanY = (vRect.height - svgH * modalScale) / 2;
+            modalPanX = (vRect.width - dims.totalW * modalScale) / 2;
+            modalPanY = (vRect.height - dims.totalH * modalScale) / 2;
             updateModalTransform();
           }
 
@@ -1326,6 +1381,13 @@ export class MarkdownPreviewWebviewPanel {
               fitModalToScreen();
             } else if (e.key === '1') {
               resetModalZoom();
+            }
+          });
+
+          window.addEventListener('resize', () => {
+            const modal = document.getElementById('diagramModal');
+            if (modal && modal.classList.contains('active')) {
+              fitModalToScreen();
             }
           });
 

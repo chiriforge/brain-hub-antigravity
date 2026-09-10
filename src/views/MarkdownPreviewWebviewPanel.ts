@@ -218,13 +218,7 @@ export class MarkdownPreviewWebviewPanel {
         <style>
           ${getKaTeXCss(fontsUri.toString())}
         </style>
-        <script src="${mermaidUri}"></script>
-        <script>
-          if (typeof mermaid === 'undefined') {
-            // Online CDN fallback if local resource was not loaded
-            document.write('<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"><\\/script>');
-          }
-        </script>
+        <!-- Mermaid script is loaded dynamically on-demand only when diagrams exist -->
         <style>
           ${HIGHLIGHT_CSS}
         </style>
@@ -566,7 +560,7 @@ export class MarkdownPreviewWebviewPanel {
           .mermaid-body {
             padding: 24px 16px;
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
             align-items: center;
             overflow-x: auto;
             background: var(--bg-primary);
@@ -579,6 +573,17 @@ export class MarkdownPreviewWebviewPanel {
             height: auto;
             transition: transform 0.2s ease;
             transform-origin: center center;
+          }
+
+          /* Mode allowing natural 100% width with horizontal scroll for wide diagrams */
+          .mermaid-card.scroll-mode .mermaid-body {
+            justify-content: flex-start;
+          }
+
+          .mermaid-card.scroll-mode .mermaid-body svg {
+            max-width: none !important;
+            width: auto !important;
+            min-width: max-content;
           }
 
           .mermaid-source-view {
@@ -635,10 +640,14 @@ export class MarkdownPreviewWebviewPanel {
             font-family: var(--font-mono);
           }
 
-          /* Suppress Mermaid unhandled parse error artifacts injected directly into body */
+          /* Suppress Mermaid unhandled parse error artifacts injected directly into body without breaking layout/measurement */
           body > div[id^="dmermaid-"],
           body > svg[id^="mermaid-"] {
-            display: none !important;
+            position: absolute !important;
+            top: -9999px !important;
+            left: -9999px !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
           }
 
           /* Fullscreen Modal for Diagrams - Architectural Canvas with Pan & Zoom */
@@ -833,6 +842,7 @@ export class MarkdownPreviewWebviewPanel {
         <script>
           const vscode = acquireVsCodeApi();
           const rawDocContent = ${JSON.stringify(rawMarkdown)};
+          const mermaidScriptUri = '${mermaidUri}';
           let currentMermaidMode = 'sanitized'; // 'sanitized' | 'original'
 
           // Retain scroll position across auto-updates
@@ -841,8 +851,14 @@ export class MarkdownPreviewWebviewPanel {
             if (savedScroll) {
               window.scrollTo(0, parseInt(savedScroll, 10));
             }
-            renderMermaidDiagrams();
           });
+
+          // Trigger diagram rendering as soon as DOM is ready without waiting for full page load
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => renderMermaidDiagrams());
+          } else {
+            renderMermaidDiagrams();
+          }
 
           window.addEventListener('scroll', () => {
             sessionStorage.setItem('previewScrollPos_' + location.href, window.scrollY);
@@ -1006,14 +1022,40 @@ export class MarkdownPreviewWebviewPanel {
             return false;
           }
 
+          let mermaidLoadingPromise = null;
+          function loadMermaidScript() {
+            if (typeof mermaid !== 'undefined') return Promise.resolve(true);
+            if (mermaidLoadingPromise) return mermaidLoadingPromise;
+            mermaidLoadingPromise = new Promise((resolve) => {
+              const s = document.createElement('script');
+              s.src = mermaidScriptUri;
+              s.onload = () => resolve(true);
+              s.onerror = () => {
+                console.warn('Failed to load local mermaid script:', mermaidScriptUri);
+                resolve(false);
+              };
+              document.head.appendChild(s);
+            });
+            return mermaidLoadingPromise;
+          }
+
           async function renderMermaidDiagrams() {
-            if (typeof mermaid === 'undefined') return;
+            const containers = document.querySelectorAll('.mermaid-container:not(.rendered)');
+            if (containers.length === 0) return;
+
+            if (typeof mermaid === 'undefined') {
+              const ok = await loadMermaidScript();
+              if (!ok || typeof mermaid === 'undefined') {
+                console.warn('Mermaid script could not be loaded');
+                return;
+              }
+            }
 
             try {
-              const isDark = document.body.classList.contains('vscode-dark');
+              const isLight = document.body.classList.contains('vscode-light');
               mermaid.initialize({
                 startOnLoad: false,
-                theme: isDark ? 'dark' : 'default',
+                theme: isLight ? 'default' : 'dark',
                 securityLevel: 'loose',
                 fontFamily: 'var(--font-family)',
                 flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
@@ -1022,7 +1064,6 @@ export class MarkdownPreviewWebviewPanel {
               console.warn('Mermaid initialize warning:', initErr);
             }
 
-            const containers = document.querySelectorAll('.mermaid-container:not(.rendered)');
             for (const el of containers) {
               el.classList.add('rendered');
               const rawCode = decodeURIComponent(el.getAttribute('data-mermaid') || '');
@@ -1045,6 +1086,7 @@ export class MarkdownPreviewWebviewPanel {
                     '<div class="mermaid-header">' +
                       '<span class="mermaid-tag"><i class="codicon codicon-graph"></i> Mermaid Diagram (' + (currentMermaidMode === 'sanitized' ? '✨ Sanitized' : '📄 Original') + ')</span>' +
                       '<div class="mermaid-actions">' +
+                        '<button class="mermaid-btn" onclick="toggleDiagramFit(this)" title="Toggle 100% scrollable size or fit to width"><i class="codicon codicon-arrow-both"></i> <span class="fit-label">Scroll</span></button>' +
                         '<button class="mermaid-btn" onclick="toggleSourceView(this)" title="View Mermaid source code"><i class="codicon codicon-code"></i> Source</button>' +
                         '<button class="mermaid-btn" onclick="copyMermaidCode(\\'' + encodedRaw + '\\')" title="Copy raw Mermaid code"><i class="codicon codicon-copy"></i> Copy</button>' +
                         '<button class="mermaid-btn" onclick="openFullscreen(this)" title="View diagram in fullscreen"><i class="codicon codicon-screen-full"></i> Fullscreen</button>' +
@@ -1082,6 +1124,16 @@ export class MarkdownPreviewWebviewPanel {
                 if (leftover) leftover.remove();
               }
             }
+          }
+
+          function toggleDiagramFit(btn) {
+            const card = btn.closest('.mermaid-card');
+            if (!card) return;
+            card.classList.toggle('scroll-mode');
+            const isScroll = card.classList.contains('scroll-mode');
+            const label = btn.querySelector('.fit-label');
+            if (label) label.innerText = isScroll ? 'Fit' : 'Scroll';
+            btn.classList.toggle('primary', isScroll);
           }
 
           function toggleSourceView(btn) {

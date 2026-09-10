@@ -1559,7 +1559,7 @@ export class ChatWebviewPanel {
           .mermaid-body {
             padding: 16px;
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
             overflow-x: auto;
             background: rgba(0, 0, 0, 0.08);
           }
@@ -1625,10 +1625,14 @@ export class ChatWebviewPanel {
             margin-bottom: 10px;
           }
 
-          /* Suppress Mermaid unhandled parse error artifacts injected directly into body */
+          /* Suppress Mermaid unhandled parse error artifacts injected directly into body without breaking layout/measurement */
           body > div[id^="dmermaid-"],
           body > svg[id^="mermaid-"] {
-            display: none !important;
+            position: absolute !important;
+            top: -9999px !important;
+            left: -9999px !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
           }
 
           /* Full Official KaTeX Stylesheet with local fonts */

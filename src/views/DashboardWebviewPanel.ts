@@ -198,7 +198,19 @@ export class DashboardWebviewPanel {
               this.selectedSessionId = latestId;
               this.isShowingCombinedThread = false;
               const cfgOrder = vscode.workspace.getConfiguration('brainHub').get<string>('messageOrder', 'newestFirst');
+
+              if (this.isHtmlInitialized) {
+                const sessionListHtml = this.generateSessionListHtml(allLatestSessions, latestId);
+                await this.panel.webview.postMessage({
+                  command: 'updateSessionList',
+                  sessionListHtml,
+                  totalSessions: allLatestSessions.length,
+                  scrollToSelected: true
+                });
+              }
+
               await this.updateReaderOnly(latestId, false, cfgOrder === 'newestFirst' ? 'top' : 'bottom');
+              DashboardWebviewPanel.treeProvider?.refresh();
             }
             break;
 
@@ -822,6 +834,13 @@ export class DashboardWebviewPanel {
             }
           }).catch(() => {});
         }, 3000);
+
+        const sessionListHtml = this.generateSessionListHtml(sessions, this.selectedSessionId);
+        await this.panel.webview.postMessage({
+          command: 'updateSessionList',
+          sessionListHtml,
+          totalSessions: sessions.length
+        });
 
         if (this.selectedSessionId) {
           const currentSession = sessions.find((s) => s.id === this.selectedSessionId);
@@ -3595,6 +3614,11 @@ export class DashboardWebviewPanel {
               btn.classList.add('flash');
               setTimeout(() => btn.classList.remove('flash'), 800);
             }
+            const searchInput = document.getElementById('dashboardSearch');
+            if (searchInput && searchInput.value.trim().length > 0) {
+              searchInput.value = '';
+              onSearchInputChanged('dashboardSearch');
+            }
             vscode.postMessage({ command: 'selectLatestSession' });
           }
 
@@ -3841,9 +3865,13 @@ export class DashboardWebviewPanel {
             document.querySelectorAll('.session-nav-item').forEach(el => {
               if (el.getAttribute('data-id') === message.sessionId) {
                 el.classList.add('selected');
+                el.classList.remove('hidden');
                 const parentGroup = el.closest('details.session-time-group');
-                if (parentGroup && !parentGroup.open) {
-                  parentGroup.open = true;
+                if (parentGroup) {
+                  parentGroup.classList.remove('hidden');
+                  if (!parentGroup.open) {
+                    parentGroup.open = true;
+                  }
                 }
                 el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
               } else {
@@ -3963,9 +3991,14 @@ export class DashboardWebviewPanel {
                   if (parentGroup) parentGroup.open = true;
                 }
 
-                listEl.scrollTop = prevScroll;
                 updateSearchPlaceholder();
                 filterSessions();
+
+                if (message.scrollToSelected && selectedItem) {
+                  selectedItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                } else {
+                  listEl.scrollTop = prevScroll;
+                }
               }
               const brandingBadge = document.querySelector('.branding-badge');
               if (brandingBadge && message.totalSessions !== undefined) {
@@ -4233,8 +4266,9 @@ export class DashboardWebviewPanel {
 
               const matchesWs = matchesWorkspaceFilter(item);
               const matchesEmpty = matchesHideEmptyFilter(item);
+              const isSelected = item.classList.contains('selected');
 
-              if (matchesSearch && matchesWs && matchesEmpty) {
+              if ((matchesSearch && matchesWs && matchesEmpty) || isSelected) {
                 item.classList.remove('hidden');
                 visibleCount++;
                 if (isDeepMatch && !isLocalMatch) {
@@ -4254,12 +4288,13 @@ export class DashboardWebviewPanel {
               const visibleInGroup = group.querySelectorAll('.session-nav-item:not(.hidden)').length;
               const totalInGroup = group.querySelectorAll('.session-nav-item').length;
               const countBadge = group.querySelector('.session-group-count');
+              const hasSelectedInGroup = !!group.querySelector('.session-nav-item.selected');
 
-              if (visibleInGroup === 0) {
+              if (visibleInGroup === 0 && !hasSelectedInGroup) {
                 group.classList.add('hidden');
               } else {
                 group.classList.remove('hidden');
-                if (query) {
+                if (query || hasSelectedInGroup) {
                   group.open = true;
                 }
                 if (query || isWorkspaceFilterActive || isHideEmptyActive) {

@@ -144,6 +144,13 @@ console.log('✓ Requirement 8i: Fullscreen Diagram Canvas (pan & zoom, dot-grid
 
 console.log('✓ Requirement 8: Rich Markdown Preview, Dual Action Icons (🔎 / 📄), Offline Mermaid.js & Mermaid Sanitize Toggle verified!');
 
+// 9. Check Jump to Latest Chat & Sidepanel Sync
+assert(dash.includes("command: 'updateSessionList'"), 'DashboardWebviewPanel: updateSessionList command missing');
+assert(dash.includes("scrollToSelected: true"), 'DashboardWebviewPanel: scrollToSelected option missing in selectLatestSession');
+assert(dash.includes("const isSelected = item.classList.contains('selected');"), 'DashboardWebviewPanel: isSelected preservation in filterSessions missing');
+assert(dash.includes("onSearchInputChanged('dashboardSearch');"), 'DashboardWebviewPanel: search clearing in loadLatestChat missing');
+console.log('✓ Requirement 9: Jump to Latest Chat & Sidepanel session list synchronization verified!');
+
 console.log('\n🎉 ALL REQUIREMENTS & REGRESSION CHECKS VERIFIED SUCCESSFULLY!');
 
 

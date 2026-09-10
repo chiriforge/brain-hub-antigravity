@@ -919,9 +919,6 @@ export class SessionScanner {
         if (!detectedMachine && data.content) {
           detectedMachine = this.extractMachineFromContent(data.content);
         }
-        if (!detectedParentId && data.content) {
-          detectedParentId = this.extractReferencedSessionId(data.content, sessionId);
-        }
       } catch {
         // Skip invalid JSON line
       }
@@ -1313,9 +1310,56 @@ export class SessionScanner {
     const session = this.buildSessionFromParsed(sessionId, sessionPath, foundStats.mtime, parsed);
     session.messageCount = parsed.messages.length;
 
+    // Preserve and synchronize lineage properties from existing cache
+    const cacheKey = `${sessionId}_${sessionPath}`;
+    const existingCacheEntry = this.sessionCache.get(cacheKey) || Array.from(this.sessionCache.values()).find((e) => e?.session?.id === sessionId);
+    if (existingCacheEntry?.session) {
+      if (!session.rootId && existingCacheEntry.session.rootId) {
+        session.rootId = existingCacheEntry.session.rootId;
+      }
+      if ((!session.childIds || session.childIds.length === 0) && existingCacheEntry.session.childIds && existingCacheEntry.session.childIds.length > 0) {
+        session.childIds = [...existingCacheEntry.session.childIds];
+      }
+      if (!session.threadTitle && existingCacheEntry.session.threadTitle) {
+        session.threadTitle = existingCacheEntry.session.threadTitle;
+      }
+      if (!session.parentId && existingCacheEntry.session.parentId) {
+        session.parentId = existingCacheEntry.session.parentId;
+      }
+    }
+
+    // If session has parentId but rootId is still not resolved, trace up to root
+    if (session.parentId && !session.rootId) {
+      let currId: string | undefined = session.parentId;
+      const visited = new Set<string>([sessionId]);
+      let rootCandidate = sessionId;
+      while (currId && !visited.has(currId)) {
+        visited.add(currId);
+        rootCandidate = currId;
+        const parentEntry = Array.from(this.sessionCache.values()).find((e) => e?.session?.id === currId);
+        currId = parentEntry?.session?.parentId;
+      }
+      session.rootId = rootCandidate;
+    } else if (!session.parentId && !session.rootId) {
+      session.rootId = session.id;
+    }
+
+    // Bidirectional child link: ensure parent's childIds in cache includes this session.id
+    if (session.parentId) {
+      for (const entry of this.sessionCache.values()) {
+        if (entry?.session && entry.session.id === session.parentId) {
+          if (!entry.session.childIds) {
+            entry.session.childIds = [];
+          }
+          if (!entry.session.childIds.includes(session.id)) {
+            entry.session.childIds.push(session.id);
+          }
+        }
+      }
+    }
+
     this.attachUserMedia(sessionPath, parsed.messages);
 
-    const cacheKey = `${sessionId}_${sessionPath}`;
     this.sessionCache.set(cacheKey, {
       session,
       mtime: foundStats.mtimeMs,

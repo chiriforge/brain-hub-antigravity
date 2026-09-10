@@ -136,6 +136,7 @@ export class DashboardWebviewPanel {
       const threadSessions = rootId
         ? cachedSessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId)
         : (activeSession ? [activeSession] : []);
+      threadSessions.sort((a, b) => (a.createdAt || a.lastModified).getTime() - (b.createdAt || b.lastModified).getTime());
 
       const configState = this.getAppConfigState();
       this.panel.webview.html = this.generateDashboardHtml(
@@ -723,8 +724,12 @@ export class DashboardWebviewPanel {
           const targetInList = sessions.find((s) => s.id === sessionId);
           if (targetInList) {
             targetInList.messageCount = sessionData.session.userPromptCount || sessionData.messages.filter(m => m.type === 'USER_INPUT').length;
+            activeSession.rootId = targetInList.rootId || activeSession.rootId || activeSession.id;
+            activeSession.childIds = targetInList.childIds || activeSession.childIds || [];
+            activeSession.parentId = activeSession.parentId || targetInList.parentId;
+            activeSession.threadTitle = targetInList.threadTitle || activeSession.threadTitle;
           }
-          const rootId = sessionData.session.rootId || sessionData.session.id;
+          const rootId = targetInList?.rootId || activeSession.rootId || activeSession.id;
           threadSessions = sessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId);
           threadSessions.sort((a, b) => (a.createdAt || a.lastModified).getTime() - (b.createdAt || b.lastModified).getTime());
         }
@@ -852,8 +857,12 @@ export class DashboardWebviewPanel {
             const targetInList = sessions.find((s) => s.id === this.selectedSessionId);
             if (targetInList) {
               targetInList.messageCount = sessionData.session.userPromptCount || sessionData.messages.filter(m => m.type === 'USER_INPUT').length;
+              activeSession.rootId = targetInList.rootId || activeSession.rootId || activeSession.id;
+              activeSession.childIds = targetInList.childIds || activeSession.childIds || [];
+              activeSession.parentId = activeSession.parentId || targetInList.parentId;
+              activeSession.threadTitle = targetInList.threadTitle || activeSession.threadTitle;
             }
-            const rootId = sessionData.session.rootId || sessionData.session.id;
+            const rootId = targetInList?.rootId || activeSession.rootId || activeSession.id;
             threadSessions = sessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId);
             threadSessions.sort((a, b) => (a.createdAt || a.lastModified).getTime() - (b.createdAt || b.lastModified).getTime());
           }

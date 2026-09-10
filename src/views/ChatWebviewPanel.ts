@@ -295,7 +295,14 @@ export class ChatWebviewPanel {
       this.lastContentSignature = newSignature;
 
       const allSessions = await scanner.scanSessions();
-      const rootId = data.session.rootId || data.session.id;
+      const targetInList = allSessions.find((s) => s.id === this.currentSession.id);
+      if (targetInList) {
+        data.session.rootId = targetInList.rootId || data.session.rootId || data.session.id;
+        data.session.childIds = targetInList.childIds || data.session.childIds || [];
+        data.session.parentId = data.session.parentId || targetInList.parentId;
+        data.session.threadTitle = targetInList.threadTitle || data.session.threadTitle;
+      }
+      const rootId = targetInList?.rootId || data.session.rootId || data.session.id;
       const threadSessions = allSessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId);
       threadSessions.sort((a, b) => (a.createdAt || a.lastModified).getTime() - (b.createdAt || b.lastModified).getTime());
 

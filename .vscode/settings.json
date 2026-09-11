@@ -1,0 +1,8 @@
+{
+    "sonarlint.analysisExcludesStandalone": "**/scratch/**,scratch/**,**/.gemini/**",
+    "terminal.integrated.env.windows": {
+        "PATH": "${env:LOCALAPPDATA}\\Programs\\nodejs;${env:ProgramFiles}\\nodejs;${env:PATH}"
+    },
+    "editor.wordWrap": "bounded",
+    "editor.wrapOnEscapedLineFeeds": true
+}

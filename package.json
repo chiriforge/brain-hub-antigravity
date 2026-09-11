@@ -1,0 +1,498 @@
+{
+  "name": "brain-hub-antigravity",
+  "displayName": "Brain Hub for Antigravity",
+  "description": "Search, view, resume, and sync Antigravity Brain sessions across machines.",
+  "version": "0.5.1-build-0008",
+  "publisher": "chiriforge",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chiriforge/brain-hub-antigravity.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "icon": "media/icon.png",
+  "categories": [
+    "AI",
+    "Chat",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "antigravity",
+    "chat",
+    "history",
+    "gemini",
+    "deepmind",
+    "ai",
+    "transcript",
+    "sync",
+    "github",
+    "threads",
+    "dashboard"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "brain-hub",
+          "title": "Brain Hub for Antigravity",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "brain-hub": [
+        {
+          "id": "brainHub.treeView",
+          "name": "Chat Sessions",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "brainHub.openDashboard",
+        "category": "Brain Hub",
+        "title": "Open Dashboard",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "brainHub.openSettings",
+        "category": "Brain Hub",
+        "title": "Open Settings",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "brainHub.syncNow",
+        "category": "Brain Hub",
+        "title": "Sync with GitHub (Pull & Push)",
+        "icon": "$(github)"
+      },
+      {
+        "command": "brainHub.setupGitSync",
+        "category": "Brain Hub",
+        "title": "Setup GitHub Backup Repository...",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "brainHub.checkGitStatus",
+        "category": "Brain Hub",
+        "title": "Check GitHub Sync Status",
+        "icon": "$(info)"
+      },
+      {
+        "command": "brainHub.refresh",
+        "category": "Brain Hub",
+        "title": "Scan and Refresh Sessions from Disk",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "brainHub.searchChat",
+        "category": "Brain Hub",
+        "title": "Search Chat History...",
+        "icon": "$(search)"
+      },
+      {
+        "command": "brainHub.toggleWorkspaceFilter",
+        "category": "Brain Hub",
+        "title": "Filter Chat History by Current Workspace",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "brainHub.openChat",
+        "category": "Brain Hub",
+        "title": "Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "brainHub.copyResumePrompt",
+        "category": "Brain Hub",
+        "title": "Copy Resume Prompt",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "brainHub.copySessionId",
+        "category": "Brain Hub",
+        "title": "Copy Session ID",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "brainHub.exportMarkdown",
+        "category": "Brain Hub",
+        "title": "Export to Markdown (.md)",
+        "icon": "$(export)"
+      },
+      {
+        "command": "brainHub.openFolder",
+        "category": "Brain Hub",
+        "title": "Open Session Folder in Explorer",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "brainHub.deleteSession",
+        "category": "Brain Hub",
+        "title": "Delete Chat Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "brainHub.cleanEmptySessions",
+        "category": "Brain Hub",
+        "title": "Clean Empty Chat Sessions (0 messages)",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "brainHub.toggleHideEmptySessions",
+        "category": "Brain Hub",
+        "title": "Toggle Hide Empty Chats (0-message sessions)",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "brainHub.exportProjectDocs",
+        "category": "Brain Hub",
+        "title": "Archive Project Docs & Logs (.docs/)",
+        "icon": "$(book)"
+      },
+      {
+        "command": "brainHub.exportAllWorkspaceSessions",
+        "category": "Brain Hub",
+        "title": "Batch Export Workspace Sessions to Markdown...",
+        "icon": "$(files)"
+      },
+      {
+        "command": "brainHub.openRichMarkdownPreview",
+        "category": "Brain Hub",
+        "title": "Open Rich Markdown Preview (Mermaid & KaTeX)",
+        "icon": "$(search)"
+      },
+      {
+        "command": "brainHub.openIdeMarkdownPreview",
+        "category": "Brain Hub",
+        "title": "Open with IDE Built-in Markdown Preview",
+        "icon": "$(preview)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "brainHub.openRichMarkdownPreview",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "brainHub.openRichMarkdownPreview",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "brainHub.openDashboard",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@0"
+        },
+        {
+          "command": "brainHub.syncNow",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "brainHub.openSettings",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "brainHub.refresh",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "brainHub.searchChat",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "brainHub.toggleWorkspaceFilter",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@5"
+        },
+        {
+          "command": "brainHub.toggleHideEmptySessions",
+          "when": "view == brainHub.treeView",
+          "group": "navigation@6"
+        },
+        {
+          "command": "brainHub.exportProjectDocs",
+          "when": "view == brainHub.treeView",
+          "group": "4_export@1"
+        },
+        {
+          "command": "brainHub.exportAllWorkspaceSessions",
+          "when": "view == brainHub.treeView",
+          "group": "4_export@2"
+        },
+        {
+          "command": "brainHub.setupGitSync",
+          "when": "view == brainHub.treeView",
+          "group": "2_sync@1"
+        },
+        {
+          "command": "brainHub.checkGitStatus",
+          "when": "view == brainHub.treeView",
+          "group": "2_sync@2"
+        },
+        {
+          "command": "brainHub.cleanEmptySessions",
+          "when": "view == brainHub.treeView",
+          "group": "3_clean@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "brainHub.openChat",
+          "when": "viewItem == sessionItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "brainHub.copyResumePrompt",
+          "when": "viewItem == sessionItem",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "brainHub.copySessionId",
+          "when": "viewItem == sessionItem",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "brainHub.exportMarkdown",
+          "when": "viewItem == sessionItem",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "brainHub.openFolder",
+          "when": "viewItem == sessionItem",
+          "group": "2_system@1"
+        },
+        {
+          "command": "brainHub.deleteSession",
+          "when": "viewItem == sessionItem",
+          "group": "3_manage@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "brainHub.searchChat",
+        "key": "ctrl+k ctrl+h",
+        "mac": "cmd+k cmd+h"
+      },
+      {
+        "command": "brainHub.openDashboard",
+        "key": "ctrl+k ctrl+d",
+        "mac": "cmd+k cmd+d"
+      }
+    ],
+    "configuration": {
+      "title": "Brain Hub for Antigravity",
+      "properties": {
+        "brainHub.brainPath": {
+          "type": "string",
+          "default": "",
+          "description": "Primary path to Antigravity brain directory (defaults to ~/.gemini/antigravity-ide/brain)"
+        },
+        "brainHub.additionalBrainPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional folder paths to scan and merge alongside the primary brain folder (e.g. cloned Git repositories or external backups)"
+        },
+        "brainHub.machineName": {
+          "type": "string",
+          "default": "",
+          "description": "Custom PC/Machine name label for sessions created on this machine (defaults to system hostname)"
+        },
+        "brainHub.sessionSortBy": {
+          "type": "string",
+          "enum": [
+            "lastModified",
+            "createdAt"
+          ],
+          "enumDescriptions": [
+            "Sort by time of the last message / latest activity",
+            "Sort by time when chat was created"
+          ],
+          "default": "lastModified",
+          "description": "Sorting criteria for the chat sessions list (default: sort by last message time)"
+        },
+        "brainHub.messageOrder": {
+          "type": "string",
+          "enum": [
+            "newestFirst",
+            "oldestFirst"
+          ],
+          "enumDescriptions": [
+            "Show newest messages at the top (💬 Newest First)",
+            "Show oldest messages at the top (💬 Oldest First)"
+          ],
+          "default": "newestFirst",
+          "description": "Default sorting order of messages in chat transcript viewer"
+        },
+        "brainHub.autoSyncOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically sync with GitHub in background when VS Code starts up"
+        },
+        "brainHub.autoSyncIntervalMinutes": {
+          "type": "number",
+          "default": 30,
+          "description": "Interval in minutes for automatic background Git synchronization (set to 0 to disable periodic sync)"
+        },
+        "brainHub.backgroundScanIntervalMinutes": {
+          "type": "number",
+          "default": 5,
+          "description": "Interval in minutes for automatic background scanning of new chat sessions (set to 0 to disable)"
+        },
+        "brainHub.enableRealtimeWatcher": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically monitor the brain folder in real-time for newly created or deleted chat sessions"
+        },
+        "brainHub.autoRefreshOnWindowFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically refresh chat sessions when switching focus back to this IDE window"
+        },
+        "brainHub.filterWorkspaceByDefault": {
+          "type": "boolean",
+          "default": false,
+          "description": "Filter chat history by current workspace by default"
+        },
+        "brainHub.hideEmptySessions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide empty chat sessions that contain no messages or prompts"
+        },
+        "brainHub.autoReloadOnLiveChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reload and stream updates when the active chat transcript file changes"
+        },
+        "brainHub.defaultToolsState": {
+          "type": "string",
+          "enum": [
+            "collapsed",
+            "expanded"
+          ],
+          "enumDescriptions": [
+            "Tools collapsed by default (🛠️ Collapsed - Recommended)",
+            "Tools expanded by default (🛠️ Expanded)"
+          ],
+          "default": "collapsed",
+          "description": "Default expand/collapse state for tool execution details"
+        },
+        "brainHub.defaultAiStepsState": {
+          "type": "string",
+          "enum": [
+            "collapsed",
+            "expanded"
+          ],
+          "enumDescriptions": [
+            "Autonomous AI action groups collapsed by default (⚡ Collapsed - Recommended)",
+            "Autonomous AI action groups expanded by default (⚡ Expanded)"
+          ],
+          "default": "collapsed",
+          "description": "Default expand/collapse state for autonomous AI execution steps"
+        },
+        "brainHub.defaultGroupExpansion": {
+          "type": "string",
+          "enum": [
+            "smart",
+            "allExpanded",
+            "collapsed"
+          ],
+          "enumDescriptions": [
+            "Smart auto-expansion: Today & Yesterday expand; if none, only the newest older group expands",
+            "All time groups expanded by default",
+            "All time groups collapsed by default"
+          ],
+          "default": "smart",
+          "description": "Default expand/collapse behavior for chat session time groups in the side panel and dashboard"
+        },
+        "brainHub.maxQuickSearchItems": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of items to index for Quick Search"
+        },
+        "brainHub.autoOpenDashboardOnSidebarFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the Brain Hub Dashboard in the main editor window when clicking the Antigravity Activity Bar icon."
+        },
+        "brainHub.archiver.defaultMode": {
+          "type": "string",
+          "enum": [
+            "askEachTime",
+            "safeDocsOnly",
+            "fullWithSanitization"
+          ],
+          "enumDescriptions": [
+            "Always ask with options popup",
+            "Safe Architecture Docs Only - Plans/Walkthroughs/Diagrams only, skips raw transcripts",
+            "Full Archive with Secret Redaction & .gitignore protection"
+          ],
+          "default": "askEachTime",
+          "description": "Default mode when archiving workspace documentation to .docs/ folder"
+        },
+        "brainHub.archiver.autoGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically protect .gitignore by adding .docs/logs/ and .docs/scratch/ to prevent committing sensitive chat transcripts to Git"
+        },
+        "brainHub.archiver.sanitizeSecrets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically detect and redact API keys, tokens, passwords, and private keys when exporting markdown or archiving session logs"
+        },
+        "brainHub.archiver.customSecretPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional custom regex patterns to detect and mask from exported logs and markdown documents"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "node esbuild.js",
+    "package": "npx @vscode/vsce package --no-dependencies",
+    "release": "node scripts/release.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@types/katex": "^0.16.8",
+    "highlight.js": "^11.12.0",
+    "katex": "^0.18.4",
+    "marked": "^18.0.10",
+    "marked-katex-extension": "^5.1.11"
+  }
+}

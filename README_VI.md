@@ -14,6 +14,21 @@ Tiện ích mở rộng cho VS Code và Google DeepMind Antigravity IDE dùng đ
 
 [Hướng Dẫn Sử Dụng (Tiếng Việt)](./USER_GUIDE_VI.md) | [User Guide (English)](./USER_GUIDE.md) | [Tài Liệu Kiến Trúc & Phát Triển](./ARCHITECTURE.md)
 
+<p align="center">
+  <img src="./media/showcase-chat-reader.png" alt="Minh họa Giao diện Brain Hub Chat Reader Webview" width="100%">
+  <br>
+  <em>Hình 1: Khung chat mặc định của Antigravity IDE (bên trái) và Trình đọc Webview Brain Hub (bên phải).</em>
+</p>
+
+| Khả Năng Xử Lý | Khung Chat Mặc Định (Trái) | Trình Đọc Webview Brain Hub (Phải) |
+|---|---|---|
+| **Công thức Toán** | Cú pháp văn bản thô chưa render (`$$...$$`) | Render công thức KaTeX trực quan, căn chỉnh phương trình nhiều dòng |
+| **Sơ đồ Hệ thống** | Khối mã nguồn Mermaid thô | Render trực tiếp thành sơ đồ vector SVG tương tác |
+| **Khối Mã Nguồn** | Định dạng khối mã cơ bản | Tô màu cú pháp bằng highlight.js, đánh số dòng, tùy chọn ngắt dòng (Wrap) và nút Sao chép độc lập |
+| **Khối Suy Luận** | Hiển thị dạng văn bản mở rộng | Khối thu gọn/mở rộng `Thinking` và `AI Steps` |
+| **Thông Số Phiên** | Luồng tin nhắn cơ bản | Huy hiệu trạng thái Live, số lượng token, số tin nhắn, số bước thực thi và thời gian |
+| **Thao Tác Phiên** | Không có | Thanh công cụ tích hợp đồng bộ Git, xuất tài liệu `.docs/`, tạo nhánh chat và nạp lại |
+
 ---
 
 ## Tính Năng

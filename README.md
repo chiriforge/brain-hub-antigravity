@@ -14,6 +14,21 @@ An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, 
 
 [User Guide (English)](./USER_GUIDE.md) | [User Guide (Tiếng Việt)](./USER_GUIDE_VI.md) | [Architecture & Developer Guide](./ARCHITECTURE.md)
 
+<p align="center">
+  <img src="./media/showcase-chat-reader.png" alt="Brain Hub Chat Reader Webview Showcase" width="100%">
+  <br>
+  <em>Figure 1: Native Antigravity IDE Chat panel (left) versus Brain Hub Chat Reader Webview (right).</em>
+</p>
+
+| Capability | Native IDE Chat Panel (Left) | Brain Hub Chat Reader (Right) |
+|---|---|---|
+| **LaTeX Mathematics** | Raw unrendered text (`$$...$$`) | KaTeX rendered formulas with multi-line equation alignment |
+| **System Diagrams** | Raw Mermaid code block | Rendered interactive Mermaid SVG diagrams |
+| **Code Formatting** | Standard code block | Highlight.js syntax highlighting with line numbers, line wrap, and copy actions |
+| **Model Reasoning** | Expanded text output | Collapsible `Thinking` and `AI Steps` sections |
+| **Session Metadata** | Basic message stream | Live status, token count, message count, step index, and elapsed time |
+| **Session Operations** | None | Toolbar with Git sync, `.docs/` export, branch/fork, and raw transcript access |
+
 ---
 
 ## Features

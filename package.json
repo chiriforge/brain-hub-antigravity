@@ -329,8 +329,8 @@
             "createdAt"
           ],
           "enumDescriptions": [
-            "Sort by time of the last message / latest activity (Theo thời gian tin nhắn cuối cùng)",
-            "Sort by time when chat was created (Theo thời gian tạo chat)"
+            "Sort by time of the last message / latest activity",
+            "Sort by time when chat was created"
           ],
           "default": "lastModified",
           "description": "Sorting criteria for the chat sessions list (default: sort by last message time)"
@@ -361,17 +361,17 @@
         "brainHub.backgroundScanIntervalMinutes": {
           "type": "number",
           "default": 5,
-          "description": "Interval in minutes for automatic background scanning of new chat sessions (Chu kỳ quét ngầm tìm chat mới mỗi 5 phút; đặt 0 để tắt)"
+          "description": "Interval in minutes for automatic background scanning of new chat sessions (set to 0 to disable)"
         },
         "brainHub.enableRealtimeWatcher": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically monitor the brain folder in real-time for newly created or deleted chat sessions (Tự động giám sát thư mục brain để phát hiện chat mới ngay lập tức)"
+          "description": "Automatically monitor the brain folder in real-time for newly created or deleted chat sessions"
         },
         "brainHub.autoRefreshOnWindowFocus": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically refresh chat sessions when switching focus back to this IDE window (Tự động làm mới khi chuyển lại cửa sổ IDE)"
+          "description": "Automatically refresh chat sessions when switching focus back to this IDE window"
         },
         "brainHub.filterWorkspaceByDefault": {
           "type": "boolean",
@@ -381,12 +381,12 @@
         "brainHub.hideEmptySessions": {
           "type": "boolean",
           "default": true,
-          "description": "Hide empty chat sessions that contain no messages or prompts (Tự động ẩn các phiên chat rỗng 0 tin nhắn)"
+          "description": "Hide empty chat sessions that contain no messages or prompts"
         },
         "brainHub.autoReloadOnLiveChat": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically reload and stream updates when the active chat transcript file changes (Tự động cập nhật theo thời gian thực khi hội thoại đang xem có tin nhắn mới)"
+          "description": "Automatically reload and stream updates when the active chat transcript file changes"
         },
         "brainHub.defaultToolsState": {
           "type": "string",
@@ -422,9 +422,9 @@
             "collapsed"
           ],
           "enumDescriptions": [
-            "Smart auto-expansion: Today & Yesterday expand; if none, only the newest older group expands (Mặc định thông minh)",
-            "All time groups expanded by default (Mở rộng tất cả các nhóm thời gian)",
-            "All time groups collapsed by default (Thu gọn tất cả các nhóm)"
+            "Smart auto-expansion: Today & Yesterday expand; if none, only the newest older group expands",
+            "All time groups expanded by default",
+            "All time groups collapsed by default"
           ],
           "default": "smart",
           "description": "Default expand/collapse behavior for chat session time groups in the side panel and dashboard"
@@ -447,9 +447,9 @@
             "fullWithSanitization"
           ],
           "enumDescriptions": [
-            "Always ask with options popup (🛡️ Hỏi xác nhận mỗi lần chạy)",
-            "Safe Architecture Docs Only - Plans/Walkthroughs/Diagrams only, skips raw transcripts (🛡️ Khuyến nghị)",
-            "Full Archive with Secret Redaction & .gitignore protection (📋 Toàn bộ tài liệu kèm log đã khử trùng)"
+            "Always ask with options popup",
+            "Safe Architecture Docs Only - Plans/Walkthroughs/Diagrams only, skips raw transcripts",
+            "Full Archive with Secret Redaction & .gitignore protection"
           ],
           "default": "askEachTime",
           "description": "Default mode when archiving workspace documentation to .docs/ folder"
@@ -457,12 +457,12 @@
         "brainHub.archiver.autoGitignore": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically protect .gitignore by adding .docs/logs/ and .docs/scratch/ to prevent committing sensitive chat transcripts to Git (Tự động thêm .docs/logs/ vào .gitignore)"
+          "description": "Automatically protect .gitignore by adding .docs/logs/ and .docs/scratch/ to prevent committing sensitive chat transcripts to Git"
         },
         "brainHub.archiver.sanitizeSecrets": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically detect and redact API keys, tokens, passwords, and private keys when exporting markdown or archiving session logs (Tự động che giấu API keys, mật khẩu, tokens)"
+          "description": "Automatically detect and redact API keys, tokens, passwords, and private keys when exporting markdown or archiving session logs"
         },
         "brainHub.archiver.customSecretPatterns": {
           "type": "array",
@@ -470,7 +470,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Additional custom regex patterns to detect and mask from exported logs and markdown documents (Danh sách regex tự định nghĩa để che dữ liệu nhạy cảm)"
+          "description": "Additional custom regex patterns to detect and mask from exported logs and markdown documents"
         }
       }
     }

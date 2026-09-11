@@ -438,7 +438,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('brainHub.copyResumePrompt', async (item?: SessionTreeItem | ChatSession) => {
       const session = item instanceof SessionTreeItem ? item.session : item;
       if (session) {
-        const prompt = `Hãy đọc lại ngữ cảnh hội thoại trước đó của phiên làm việc tại thư mục:\n\`${session.path}\`\n(Session ID: \`${session.id}\` - Chủ đề: "${session.title}")\nvà tiếp tục hỗ trợ tôi.`;
+        const prompt = `Please review the previous conversation context of the session in folder:\n\`${session.path}\`\n(Session ID: \`${session.id}\` - Title: "${session.title}")\nand continue assisting me.`;
         await vscode.env.clipboard.writeText(prompt);
         vscode.window.showInformationMessage('Resume prompt copied to clipboard! Paste it into a new Antigravity chat.');
       }

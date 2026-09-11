@@ -512,7 +512,7 @@ export class ChatWebviewPanel {
   }
 
   private generateResumePrompt(session: ChatSession): string {
-    return `Hãy đọc lại ngữ cảnh hội thoại trước đó của phiên làm việc tại thư mục:\n\`${session.path}\`\n(Session ID: \`${session.id}\` - Chủ đề: "${session.title}")\nvà tiếp tục hỗ trợ tôi.`;
+    return `Please review the previous conversation context of the session in folder:\n\`${session.path}\`\n(Session ID: \`${session.id}\` - Title: "${session.title}")\nand continue assisting me.`;
   }
 
   private generateHtml(session: ChatSession, messages: ChatMessage[], threadSessions: ChatSession[] = []): string {

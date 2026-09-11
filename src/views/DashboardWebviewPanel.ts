@@ -3331,7 +3331,7 @@ export class DashboardWebviewPanel {
             <button class="action-btn icon-only ${isSidebarCollapsed ? 'active' : ''}" onclick="toggleSidebar()" id="sidebarToggleBtn" title="Toggle Sidebar (Collapse / Expand Left Panel)">
               <i class="codicon codicon-layout-sidebar-left"></i>
             </button>
-            <button class="action-btn icon-only latest-chat-btn" onclick="loadLatestChat()" id="btnLoadLatestChat" title="Jump to Latest Chat (Chuyển nhanh đến phiên chat mới nhất)">
+            <button class="action-btn icon-only latest-chat-btn" onclick="loadLatestChat()" id="btnLoadLatestChat" title="Jump to Latest Chat">
               <span class="lightning-icon">⚡</span>
             </button>
             <div class="app-branding">

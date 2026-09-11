@@ -610,6 +610,25 @@ export function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  // Command: Brain Hub: Export Markdown to PDF
+  context.subscriptions.push(
+    vscode.commands.registerCommand('brainHub.exportMarkdownToPdf', async (uri?: vscode.Uri) => {
+      let targetPath: string | undefined;
+      if (uri instanceof vscode.Uri) {
+        targetPath = uri.fsPath;
+      } else if (vscode.window.activeTextEditor) {
+        targetPath = vscode.window.activeTextEditor.document.uri.fsPath;
+      }
+
+      if (targetPath && (targetPath.toLowerCase().endsWith('.md') || targetPath.toLowerCase().endsWith('.markdown'))) {
+        const preview = MarkdownPreviewWebviewPanel.createOrShow(context.extensionUri, targetPath);
+        await preview.handleExportPdf();
+      } else {
+        vscode.window.showWarningMessage('Please select a Markdown (.md) file to export to PDF.');
+      }
+    })
+  );
 }
 
 export function deactivate() {

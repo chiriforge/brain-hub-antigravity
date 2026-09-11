@@ -2,7 +2,7 @@
   "name": "brain-hub-antigravity",
   "displayName": "Brain Hub for Antigravity",
   "description": "Search, view, resume, and sync Antigravity Brain sessions across machines.",
-  "version": "0.5.1-build-0015",
+  "version": "0.5.1-build-0016",
   "publisher": "chiriforge",
   "license": "MIT",
   "repository": {
@@ -175,6 +175,12 @@
         "category": "Brain Hub",
         "title": "Open with IDE Built-in Markdown Preview",
         "icon": "$(preview)"
+      },
+      {
+        "command": "brainHub.exportMarkdownToPdf",
+        "category": "Brain Hub",
+        "title": "Export Markdown to PDF",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -183,6 +189,11 @@
           "command": "brainHub.openRichMarkdownPreview",
           "when": "resourceExtname == .md || resourceExtname == .markdown",
           "group": "navigation@1"
+        },
+        {
+          "command": "brainHub.exportMarkdownToPdf",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation@2"
         }
       ],
       "editor/title": [
@@ -190,6 +201,11 @@
           "command": "brainHub.openRichMarkdownPreview",
           "when": "resourceExtname == .md || resourceExtname == .markdown",
           "group": "navigation@1"
+        },
+        {
+          "command": "brainHub.exportMarkdownToPdf",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation@2"
         }
       ],
       "view/title": [

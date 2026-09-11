@@ -142,6 +142,13 @@ assert(mdPanel.includes('fitModalToScreen'), 'MarkdownPreviewWebviewPanel: fitMo
 assert(mdPanel.includes('radial-gradient'), 'MarkdownPreviewWebviewPanel: architectural dot-grid background missing');
 console.log('✓ Requirement 8i: Fullscreen Diagram Canvas (pan & zoom, dot-grid, SVG copy) verified!');
 
+assert(cmdNames.includes('brainHub.exportMarkdownToPdf'), 'package.json: exportMarkdownToPdf command missing');
+assert(mdPanel.includes('handleExportPdf'), 'MarkdownPreviewWebviewPanel: handleExportPdf missing');
+assert(mdPanel.includes('exportPdf()'), 'MarkdownPreviewWebviewPanel: exportPdf client caller missing');
+assert(mdPanel.includes('getBrowserExecutablePath'), 'MarkdownPreviewWebviewPanel: getBrowserExecutablePath missing');
+assert(mdPanel.includes('generatePrintHtml'), 'MarkdownPreviewWebviewPanel: generatePrintHtml missing');
+console.log('✓ Requirement 10: Export Markdown to PDF with Headless Browser & Print Styles verified!');
+
 console.log('✓ Requirement 8: Rich Markdown Preview, Dual Action Icons (🔎 / 📄), Offline Mermaid.js & Mermaid Sanitize Toggle verified!');
 
 // 9. Check Jump to Latest Chat & Sidepanel Sync

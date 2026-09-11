@@ -1,9 +1,14 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { MarkdownRenderer } from '../services/MarkdownRenderer';
 import { HIGHLIGHT_CSS } from '../services/HighlightStyles';
 import { getKaTeXCss } from '../services/KaTeXStyles';
+
+const execFileAsync = promisify(execFile);
 
 export class MarkdownPreviewWebviewPanel {
   public static readonly viewType = 'antigravityMarkdownPreview';
@@ -118,6 +123,10 @@ export class MarkdownPreviewWebviewPanel {
 
           case 'refresh':
             this.update();
+            return;
+
+          case 'exportPdf':
+            await this.handleExportPdf(message.htmlContent);
             return;
         }
       },
@@ -353,6 +362,404 @@ export class MarkdownPreviewWebviewPanel {
     } catch {}
 
     this.update();
+  }
+
+  public static getBrowserExecutablePath(): string | null {
+    const candidates: string[] = [];
+
+    if (process.platform === 'win32') {
+      const progFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+      const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+      const localAppData = process.env['LOCALAPPDATA'] || '';
+
+      candidates.push(
+        path.join(progFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(progFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(progFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(progFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(progFiles, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe')
+      );
+    } else if (process.platform === 'darwin') {
+      candidates.push(
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium'
+      );
+    } else {
+      candidates.push(
+        '/usr/bin/microsoft-edge',
+        '/usr/bin/microsoft-edge-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/snap/bin/chromium'
+      );
+    }
+
+    for (const p of candidates) {
+      if (p && fs.existsSync(p)) {
+        return p;
+      }
+    }
+
+    return null;
+  }
+
+  public generatePrintHtml(clientHtml?: string): string {
+    const fileName = path.basename(this.filePath);
+    const fileDir = path.dirname(this.filePath);
+
+    let bodyContent = clientHtml;
+    if (!bodyContent || typeof bodyContent !== 'string' || !bodyContent.trim()) {
+      try {
+        const raw = fs.readFileSync(this.filePath, 'utf8');
+        bodyContent = MarkdownRenderer.render(raw, fileDir);
+      } catch {
+        bodyContent = '<p>Error loading document content</p>';
+      }
+    }
+
+    // Clean up interactive UI buttons from rendered content
+    bodyContent = bodyContent
+      .replace(/<span class="md-link-actions">[\s\S]*?<\/span>/gi, '')
+      .replace(/<div class="code-header-actions">[\s\S]*?<\/div>/gi, '')
+      .replace(/<div class="mermaid-actions">[\s\S]*?<\/div>/gi, '');
+
+    const fontsDir = path.join(this.extensionUri.fsPath, 'media', 'fonts').replace(/\\/g, '/');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${MarkdownRenderer.escapeHtml(fileName)}</title>
+  <style>
+    ${getKaTeXCss(fontsDir)}
+  </style>
+  <style>
+    ${HIGHLIGHT_CSS}
+  </style>
+  <style>
+    :root {
+      --bg-primary: #ffffff;
+      --text-primary: #24292e;
+      --text-secondary: #57606a;
+      --border-color: #d0d7de;
+      --code-bg: #f6f8fa;
+      --accent-blue: #0969da;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #ffffff;
+      color: #24292e;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Emoji", "Noto Sans", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 13.5px;
+      line-height: 1.65;
+      padding: 24px 32px;
+      max-width: 900px;
+      margin: 0 auto;
+      word-wrap: break-word;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+      color: #1f2328;
+      font-weight: 700;
+      margin-top: 24px;
+      margin-bottom: 12px;
+      line-height: 1.35;
+      page-break-after: avoid;
+    }
+
+    h1 { font-size: 26px; border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+    h2 { font-size: 20px; border-bottom: 1px solid #d0d7de; padding-bottom: 6px; }
+    h3 { font-size: 16px; }
+    h4 { font-size: 14px; }
+
+    p, ul, ol, blockquote, table, pre {
+      margin-bottom: 14px;
+    }
+
+    ul, ol {
+      padding-left: 24px;
+    }
+
+    li {
+      margin-bottom: 4px;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #d0d7de;
+      margin: 20px 0;
+    }
+
+    blockquote {
+      border-left: 4px solid #d0d7de;
+      padding: 6px 14px;
+      color: #57606a;
+      background: #f6f8fa;
+      border-radius: 0 4px 4px 0;
+    }
+
+    a {
+      color: #0969da;
+      text-decoration: underline;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 16px 0;
+      page-break-inside: avoid;
+    }
+
+    th, td {
+      border: 1px solid #d0d7de;
+      padding: 8px 12px;
+      font-size: 12.5px;
+      text-align: left;
+    }
+
+    th {
+      background: #f6f8fa;
+      font-weight: 600;
+    }
+
+    tr:nth-child(even) {
+      background: #fcfcfc;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 85%;
+      background: rgba(175, 184, 193, 0.2);
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      font-size: 12px;
+    }
+
+    .code-container {
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      margin: 14px 0;
+      page-break-inside: avoid;
+      overflow: hidden;
+    }
+
+    .code-header {
+      background: #eaeef2;
+      border-bottom: 1px solid #d0d7de;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #57606a;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .code-container pre {
+      margin: 0;
+      padding: 10px 12px;
+      overflow-x: auto;
+      background: transparent;
+    }
+
+    .code-line {
+      display: flex;
+      line-height: 1.5;
+    }
+
+    .code-line .line-num {
+      width: 32px;
+      min-width: 32px;
+      user-select: none;
+      color: #8c959f;
+      text-align: right;
+      padding-right: 12px;
+      font-size: 11px;
+    }
+
+    .code-line .line-content {
+      flex: 1;
+    }
+
+    /* Mermaid Diagrams in Print */
+    .mermaid-container {
+      margin: 20px 0;
+      page-break-inside: avoid;
+      text-align: center;
+    }
+
+    .mermaid-card {
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .mermaid-header {
+      background: #f6f8fa;
+      border-bottom: 1px solid #d0d7de;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #57606a;
+      text-align: left;
+    }
+
+    .mermaid-body {
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .mermaid-body svg {
+      max-width: 100% !important;
+      height: auto !important;
+    }
+
+    .mermaid-source-view {
+      display: none !important;
+    }
+
+    img {
+      max-width: 100%;
+      height: auto;
+      page-break-inside: avoid;
+    }
+
+    .md-link-actions,
+    .rich-preview-btn,
+    .ide-preview-btn,
+    .code-header-actions,
+    .copy-code-btn,
+    .toggle-wrap-btn,
+    .mermaid-actions,
+    .preview-toolbar,
+    .fullscreen-modal {
+      display: none !important;
+    }
+
+    @page {
+      margin: 15mm 15mm 15mm 15mm;
+      size: auto;
+    }
+
+    @media print {
+      body {
+        padding: 0;
+        max-width: none;
+      }
+      .code-container, table, .mermaid-container, blockquote {
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  ${bodyContent}
+</body>
+</html>`;
+  }
+
+  public async handleExportPdf(clientHtml?: string): Promise<void> {
+    const defaultPdfName = path.basename(this.filePath, path.extname(this.filePath)) + '.pdf';
+    const defaultPdfUri = vscode.Uri.file(path.join(path.dirname(this.filePath), defaultPdfName));
+
+    const targetUri = await vscode.window.showSaveDialog({
+      defaultUri: defaultPdfUri,
+      filters: { 'PDF Document (*.pdf)': ['pdf'] },
+      saveLabel: 'Export PDF',
+      title: 'Export Markdown Document to PDF'
+    });
+
+    if (!targetUri) {
+      return;
+    }
+
+    const destPath = targetUri.fsPath;
+    const browserPath = MarkdownPreviewWebviewPanel.getBrowserExecutablePath();
+    const printHtml = this.generatePrintHtml(clientHtml);
+
+    if (browserPath) {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Exporting PDF: ${path.basename(destPath)}...`,
+          cancellable: false
+        },
+        async () => {
+          const tempHtmlPath = path.join(os.tmpdir(), `bh_print_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.html`);
+          try {
+            fs.writeFileSync(tempHtmlPath, printHtml, 'utf8');
+
+            await execFileAsync(
+              browserPath,
+              [
+                '--headless',
+                '--disable-gpu',
+                '--no-pdf-header-footer',
+                `--print-to-pdf=${destPath}`,
+                tempHtmlPath
+              ],
+              { timeout: 45000 }
+            );
+
+            if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
+              const action = await vscode.window.showInformationMessage(
+                `PDF exported successfully: ${path.basename(destPath)}`,
+                'Open PDF',
+                'Reveal in Folder'
+              );
+              if (action === 'Open PDF') {
+                await vscode.commands.executeCommand('vscode.open', targetUri);
+              } else if (action === 'Reveal in Folder') {
+                await vscode.commands.executeCommand('revealFileInOS', targetUri);
+              }
+            } else {
+              throw new Error('Output PDF file was not created or is empty.');
+            }
+          } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to export PDF: ${err?.message || err}`);
+          } finally {
+            try {
+              if (fs.existsSync(tempHtmlPath)) {
+                fs.unlinkSync(tempHtmlPath);
+              }
+            } catch {}
+          }
+        }
+      );
+    } else {
+      // Fallback: Open printable HTML in default browser where user can print/save to PDF
+      const tempHtmlPath = path.join(os.tmpdir(), `bh_print_${Date.now()}_${path.basename(this.filePath)}.html`);
+      const fallbackHtml = printHtml.replace(
+        '</body>',
+        '<script>window.addEventListener("DOMContentLoaded", () => setTimeout(() => window.print(), 600));</script></body>'
+      );
+      fs.writeFileSync(tempHtmlPath, fallbackHtml, 'utf8');
+      await vscode.env.openExternal(vscode.Uri.file(tempHtmlPath));
+      vscode.window.showInformationMessage(
+        'No headless Chromium browser found. Opened printable preview in default browser. Please select "Save as PDF" to complete export.',
+        'OK'
+      );
+    }
   }
 
   public update(): void {
@@ -1033,7 +1440,7 @@ export class MarkdownPreviewWebviewPanel {
             <button class="action-btn icon-only" onclick="refreshContent()" title="Reload preview content">
               <i class="codicon codicon-refresh"></i>
             </button>
-            <button class="action-btn icon-only" onclick="window.print()" title="Print / Export to PDF">
+            <button class="action-btn icon-only" onclick="exportPdf()" title="Print / Export to PDF">
               <i class="codicon codicon-output"></i>
             </button>
           </div>
@@ -1110,6 +1517,12 @@ export class MarkdownPreviewWebviewPanel {
 
           function copyFullMarkdown() {
             vscode.postMessage({ command: 'copyText', text: rawDocContent, toast: 'Raw Markdown copied to clipboard!' });
+          }
+
+          function exportPdf() {
+            const content = document.getElementById('markdownContent');
+            const html = content ? content.innerHTML : '';
+            vscode.postMessage({ command: 'exportPdf', htmlContent: html });
           }
 
           // Mermaid Sanitizer: Auto-quotes unquoted labels with colons, arrows, parentheses, operators, and sanitizes edge labels

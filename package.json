@@ -2,7 +2,7 @@
   "name": "brain-hub-antigravity",
   "displayName": "Brain Hub for Antigravity",
   "description": "Search, view, resume, and sync Antigravity Brain sessions across machines.",
-  "version": "0.5.1-build-0017",
+  "version": "0.5.1-build-0018",
   "publisher": "chiriforge",
   "license": "MIT",
   "repository": {
@@ -494,7 +494,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "build": "node esbuild.js",
-    "package": "npx @vscode/vsce package --no-dependencies --no-rewrite-relative-links",
+    "package": "npx @vscode/vsce package --no-dependencies",
     "release": "node scripts/release.js"
   },
   "devDependencies": {

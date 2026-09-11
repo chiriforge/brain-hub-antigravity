@@ -432,27 +432,37 @@ export class ChatWebviewPanel {
     const fileUri = vscode.Uri.file(targetPath);
     const isMarkdown = targetPath.toLowerCase().endsWith('.md') || targetPath.toLowerCase().endsWith('.markdown');
 
-    // If it's a markdown file without specific line range
-    if (isMarkdown && startLine === 0 && endLine === 0) {
-      if (openMode === 'ide') {
+    if (openMode === 'rich' && isMarkdown) {
+      // 1. Explicit request for Brain Hub Rich Preview (e.g. clicked 🔎 or Artifact button)
+      try {
+        MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, targetPath, vscode.ViewColumn.Active);
+        return;
+      } catch (err) {
+        console.warn('Could not open rich markdown preview, falling back to IDE preview:', err);
         try {
           await vscode.commands.executeCommand('markdown.showPreview', fileUri);
           return;
-        } catch (err) {
-          console.warn('Could not open IDE markdown preview, falling back to editor:', err);
-        }
-      } else {
-        // Default: Open with Antigravity Rich Markdown & Mermaid Preview
+        } catch {}
+      }
+    } else if (openMode === 'ide' && isMarkdown) {
+      // 2. Explicit request for IDE Built-in Preview (e.g. clicked 📄)
+      try {
+        await vscode.commands.executeCommand('markdown.showPreview', fileUri);
+        return;
+      } catch (err) {
+        console.warn('Could not open IDE markdown preview, falling back to editor:', err);
+      }
+    } else if (isMarkdown && startLine === 0 && endLine === 0) {
+      // 3. Clicked markdown file name without line range -> Default to Brain Hub Rich Preview
+      try {
+        MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, targetPath, vscode.ViewColumn.Active);
+        return;
+      } catch (err) {
+        console.warn('Could not open rich markdown preview, falling back to IDE preview:', err);
         try {
-          MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, targetPath);
+          await vscode.commands.executeCommand('markdown.showPreview', fileUri);
           return;
-        } catch (err) {
-          console.warn('Could not open rich markdown preview, falling back to IDE preview:', err);
-          try {
-            await vscode.commands.executeCommand('markdown.showPreview', fileUri);
-            return;
-          } catch {}
-        }
+        } catch {}
       }
     }
 
@@ -2022,6 +2032,8 @@ export class ChatWebviewPanel {
           function deleteSession() { vscode.postMessage({ command: 'deleteSession' }); }
           function refreshChat() { vscode.postMessage({ command: 'refresh' }); }
           function openFile(encodedPath) { vscode.postMessage({ command: 'openFile', filePath: decodeURI(encodedPath) }); }
+          function openRichPreview(encodedPath) { vscode.postMessage({ command: 'openRichPreview', filePath: decodeURI(encodedPath) }); }
+          function openIdePreview(encodedPath) { vscode.postMessage({ command: 'openIdePreview', filePath: decodeURI(encodedPath) }); }
           function openSessionById(sessionId) { vscode.postMessage({ command: 'openSessionById', sessionId: sessionId }); }
           function toggleCombinedThread() { vscode.postMessage({ command: 'toggleCombinedThread' }); }
 
@@ -2038,6 +2050,8 @@ export class ChatWebviewPanel {
           window.deleteSession = deleteSession;
           window.refreshChat = refreshChat;
           window.openFile = openFile;
+          window.openRichPreview = openRichPreview;
+          window.openIdePreview = openIdePreview;
           window.openSessionById = openSessionById;
           window.toggleCombinedThread = toggleCombinedThread;
 
@@ -2273,9 +2287,8 @@ export class ChatWebviewPanel {
                   filePath = fileLink.getAttribute('href');
                 }
                 if (filePath && filePath !== 'javascript:void(0)' && filePath !== '#') {
-                  const isMd = fileLink.getAttribute('data-is-md') === 'true' || filePath.toLowerCase().endsWith('.md') || filePath.toLowerCase().endsWith('.markdown');
                   vscode.postMessage({
-                    command: isMd ? 'openRichPreview' : 'openFile',
+                    command: 'openFile',
                     filePath: filePath
                   });
                 }

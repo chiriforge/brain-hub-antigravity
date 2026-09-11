@@ -90,11 +90,16 @@ export class MarkdownPreviewWebviewPanel {
                 if (target.startsWith('file://')) {
                   target = decodeURIComponent(target.replace(/^file:\/\/\/?/i, ''));
                 }
-                const isMd = target.toLowerCase().endsWith('.md') || target.toLowerCase().endsWith('.markdown');
+                let cleanTarget = target.split('#')[0].split('?')[0];
+                if (process.platform === 'win32') {
+                  cleanTarget = cleanTarget.replace(/^[\/\\]([a-zA-Z]:)/, '$1');
+                  cleanTarget = path.normalize(cleanTarget);
+                }
+                const isMd = cleanTarget.toLowerCase().endsWith('.md') || cleanTarget.toLowerCase().endsWith('.markdown');
                 if (isMd) {
-                  MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, target);
+                  MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
                 } else {
-                  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+                  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(cleanTarget));
                   await vscode.window.showTextDocument(doc, { preview: false });
                 }
               } catch (err: any) {

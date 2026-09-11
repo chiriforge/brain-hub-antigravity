@@ -115,14 +115,20 @@ assert(fs.statSync('media/mermaid.min.js').size > 1000000, 'media/mermaid.min.js
 const { MermaidSanitizer } = require('../out/services/MermaidSanitizer');
 const mockMermaid = `
 graph TD
-  A[Start] --> B{Should evaluate score > 100?}
-  B -->|Score <= 50| C[Fail]
-  B -->|Score > 100| D[Pass]
+  subgraph SubHungle [hungle-vn (Private Repo)]
+    A[Start] --> B{Should evaluate score > 100?}
+    B -->|Score <= 50| C[Fail]
+    B -->|Score > 100| D [Pass (Verified)]
+    D --> E [(Database (Main))]
+  end
 `;
 const sanitizedSpec = MermaidSanitizer.sanitize(mockMermaid);
 assert(!/\b[a-zA-Z0-9_]+\{[^"\r\n\{\}]+\}/.test(sanitizedSpec), 'Sanitizer failed to quote decision node');
 assert(!/\|[^\|\r\n]*[<>][^\|\r\n]*\|/.test(sanitizedSpec), 'Sanitizer failed to escape < or > in edge label');
-console.log('✓ Requirement 8g: Verified Mermaid diagram sanitization on decision nodes and comparison operators!');
+assert(sanitizedSpec.includes('subgraph SubHungle ["hungle-vn (Private Repo)"]'), 'Sanitizer failed to sanitize subgraph ID [title]');
+assert(sanitizedSpec.includes('D["Pass (Verified)"]'), 'Sanitizer failed to sanitize node with spacing before bracket');
+assert(sanitizedSpec.includes('E[("Database (Main)")]'), 'Sanitizer failed to sanitize cylinder node with spacing before bracket');
+console.log('✓ Requirement 8g: Verified Mermaid diagram sanitization on subgraphs, nodes with spacing, decision nodes, and comparison operators!');
 
 // 8h. Check KaTeX Offline Fonts & Styles
 const fontsDir = 'media/fonts';

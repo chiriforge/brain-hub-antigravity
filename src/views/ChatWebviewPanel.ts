@@ -2665,8 +2665,19 @@ export class ChatWebviewPanel {
                 }
               }
 
-              // 2. Subgraph titles
-              if (/^\\s*subgraph\\s+/i.test(processed)) {
+              // 2. Subgraph titles: subgraph Sub_Title [My Title: With Colons] or subgraph "My Title: With Colons"
+              if (/^\\s*subgraph\\b/i.test(processed)) {
+                // 2a. Subgraph with ID and bracketed title: subgraph ID [Title] -> subgraph ID ["Title"]
+                processed = processed.replace(/^(\\s*subgraph(?:\\s+[a-zA-Z0-9_\\-]+)?)\\s*\\[([^\\]\\r\\n]+)\\]/i, (match, prefix, title) => {
+                  const trimmedTitle = title.trim();
+                  if (trimmedTitle.startsWith('"') && trimmedTitle.endsWith('"')) {
+                    return match;
+                  }
+                  const clean = trimmedTitle.replace(/"/g, "'");
+                  return prefix + ' ["' + clean + '"]';
+                });
+
+                // 2b. Subgraph without brackets: subgraph Title with special chars -> subgraph "Title with special chars"
                 processed = processed.replace(/^\\s*subgraph\\s+([^\\["\\r\\n]+)$/i, (m, title) => {
                   const t = title.trim();
                   if (/[ :()\\->&/<>\?\{\}\\[\\]]/.test(t) && !t.startsWith('"')) {
@@ -2675,58 +2686,61 @@ export class ChatWebviewPanel {
                   }
                   return m;
                 });
+
+                // Subgraph declaration line never contains node shapes
+                return processed;
               }
 
-              // 3. Hexagon node: id{{label}}
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\{\\{([^"\\r\\n\\{\\}]+)\\}\\}/g, (match, id, label) => {
+              // 3. Hexagon node: id{{label}} -> id{{"label"}}
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\{\\{([^"\\r\\n]+?)\\}\\}/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '{{\"' + clean + '\"}}';
+                return prefix + id + '{{\"' + clean + '\"}}';
               });
 
-              // 4. Cylinder / Database node: id[(label)]
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\[\\(([^"\\r\\n\\[\\]\\(\\)]+)\\)\\]/g, (match, id, label) => {
+              // 4. Cylinder / Database node: id[(label)] -> id[("label")]
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\[\\(([^"\\r\\n]+?)\\)\\]/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '[(\"' + clean + '\")]';
+                return prefix + id + '[(\"' + clean + '\")]';
               });
 
-              // 5. Circle node: id((label))
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\(\\(([^"\\r\\n\\(\\)]+)\\)\\)/g, (match, id, label) => {
+              // 5. Circle node: id((label)) -> id(("label"))
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\(\\(([^"\\r\\n]+?)\\)\\)/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '((\"' + clean + '\"))';
+                return prefix + id + '((\"' + clean + '\"))';
               });
 
               // 6. Asymmetric node: id>label] -> id>"label"]
-              processed = processed.replace(/([^a-zA-Z0-9_\-]|^)([a-zA-Z0-9_]+)>([^"\\r\\n\\[\\]]+)\\]/g, (match, prefix, id, label) => {
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*>([^"\\r\\n\\[\\]]+)\\]/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
                 return prefix + id + '>\"' + clean + '\"]';
               });
 
               // 7. Parallelogram / Trapezoid: id[/label/] or id[\\label\\]
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\[\\/([^"\\r\\n\\[\\]\\/]+)\\/\\\]/g, (match, id, label) => {
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\[\\/([^"\\r\\n]+?)\\/\\\]/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '[/\"' + clean + '\"/]';
+                return prefix + id + '[/\"' + clean + '\"/]';
               });
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\[\\\\([^"\\r\\n\\[\\]\\\\]+)\\\\\\]/g, (match, id, label) => {
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\[\\\\([^"\\r\\n]+?)\\\\\\]/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '[\\\\\"' + clean + '\"\\\\]';
-              });
-
-              // 8. Rhombus / Decision node: id{label}
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\{([^"\\r\\n\\{\\}]+)\\}/g, (match, id, label) => {
-                const clean = label.replace(/"/g, "'").trim();
-                return id + '{\"' + clean + '\"}';
+                return prefix + id + '[\\\\\"' + clean + '\"\\\\]';
               });
 
-              // 9. Rectangle node: id[label]
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\[([^"\\r\\n\\[\\]]+)\\]/g, (match, id, label) => {
+              // 8. Rhombus / Decision node: id{label} -> id{"label"}
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\{([^"\\r\\n\{\}]+)\\}/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '[\"' + clean + '\"]';
+                return prefix + id + '{\"' + clean + '\"}';
               });
 
-              // 10. Round / Capsule node: id(label)
-              processed = processed.replace(/([a-zA-Z0-9_\\-]+)\\(([^"\\r\\n\\(\\)]+)\\)/g, (match, id, label) => {
+              // 9. Rectangle node: id[label] -> id["label"]
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\[([^"\\r\\n\\[\\]]+)\\]/g, (match, prefix, id, label) => {
                 const clean = label.replace(/"/g, "'").trim();
-                return id + '(\"' + clean + '\")';
+                return prefix + id + '[\"' + clean + '\"]';
+              });
+
+              // 10. Round / Capsule node: id(label) -> id("label")
+              processed = processed.replace(/(^|[\\s;,&|>-])([a-zA-Z0-9_]+)\\s*\\(([^"\\r\\n\\(\\)]+)\\)/g, (match, prefix, id, label) => {
+                const clean = label.replace(/"/g, "'").trim();
+                return prefix + id + '(\"' + clean + '\")';
               });
 
               return processed;

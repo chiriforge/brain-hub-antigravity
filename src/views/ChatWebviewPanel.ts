@@ -467,19 +467,25 @@ export class ChatWebviewPanel {
     }
 
     // Standard text document opening as a new tab (not split screen)
+    if (startLine > 0 || endLine > 0) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        const opts: vscode.TextDocumentShowOptions = {
+          preview: false,
+          viewColumn: vscode.ViewColumn.Active,
+          selection: new vscode.Range(startLine, 0, endLine, 0)
+        };
+        await vscode.window.showTextDocument(doc, opts);
+        return;
+      } catch {}
+    }
+
     try {
-      const doc = await vscode.workspace.openTextDocument(fileUri);
-      const opts: vscode.TextDocumentShowOptions = {
-        preview: false,
-        viewColumn: vscode.ViewColumn.Active
-      };
-      if (startLine > 0 || endLine > 0) {
-        opts.selection = new vscode.Range(startLine, 0, endLine, 0);
-      }
-      await vscode.window.showTextDocument(doc, opts);
+      await vscode.commands.executeCommand('vscode.open', fileUri, { preview: false });
     } catch (err: any) {
       try {
-        await vscode.commands.executeCommand('vscode.open', fileUri, { preview: false });
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Active });
       } catch (fallbackErr: any) {
         vscode.window.showErrorMessage(`Failed to open file: ${err?.message || err}`);
       }

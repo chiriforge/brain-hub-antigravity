@@ -76,63 +76,26 @@ export class MarkdownPreviewWebviewPanel {
             return;
 
           case 'openIdePreview':
-            try {
-              await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(this.filePath));
-            } catch (err: any) {
-              vscode.window.showErrorMessage(`Failed to open IDE preview: ${err?.message || err}`);
+            if (message.filePath) {
+              await this.handleOpenFile(message.filePath, 'ide');
+            } else {
+              try {
+                await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(this.filePath));
+              } catch (err: any) {
+                vscode.window.showErrorMessage(`Failed to open IDE preview: ${err?.message || err}`);
+              }
+            }
+            return;
+
+          case 'openRichPreview':
+            if (message.filePath) {
+              await this.handleOpenFile(message.filePath, 'rich');
             }
             return;
 
           case 'openFile':
             if (message.filePath) {
-              try {
-                let target = message.filePath.trim();
-                try {
-                  target = decodeURIComponent(target);
-                } catch {}
-                target = target.replace(/^file:\/{1,3}/i, '');
-                try {
-                  target = decodeURIComponent(target);
-                } catch {}
-
-                let cleanTarget = target.split('#')[0].split('?')[0].trim();
-                if (process.platform === 'win32') {
-                  cleanTarget = cleanTarget.replace(/^[\/\\]([a-zA-Z]:)/, '$1');
-                  cleanTarget = path.normalize(cleanTarget);
-                }
-
-                // If relative path, resolve against current preview directory, or workspace
-                if (!path.isAbsolute(cleanTarget) && !/^[a-zA-Z]:[\\\/]/.test(cleanTarget)) {
-                  const currentDir = path.dirname(this.filePath);
-                  const candidate = path.resolve(currentDir, cleanTarget);
-                  if (fs.existsSync(candidate)) {
-                    cleanTarget = candidate;
-                  } else if (vscode.workspace.workspaceFolders) {
-                    for (const wf of vscode.workspace.workspaceFolders) {
-                      const wfCandidate = path.resolve(wf.uri.fsPath, cleanTarget);
-                      if (fs.existsSync(wfCandidate)) {
-                        cleanTarget = wfCandidate;
-                        break;
-                      }
-                    }
-                  }
-                }
-
-                if (!fs.existsSync(cleanTarget)) {
-                  vscode.window.showWarningMessage(`File not found: ${cleanTarget}`);
-                  return;
-                }
-
-                const isMd = cleanTarget.toLowerCase().endsWith('.md') || cleanTarget.toLowerCase().endsWith('.markdown');
-                if (isMd) {
-                  MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
-                } else {
-                  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(cleanTarget));
-                  await vscode.window.showTextDocument(doc, { preview: false });
-                }
-              } catch (err: any) {
-                vscode.window.showErrorMessage(`Failed to open target file: ${err?.message || err}`);
-              }
+              await this.handleOpenFile(message.filePath);
             }
             return;
 
@@ -181,6 +144,105 @@ export class MarkdownPreviewWebviewPanel {
         }
       });
     } catch {}
+  }
+
+  private async handleOpenFile(rawPath?: string, openMode?: 'rich' | 'ide'): Promise<void> {
+    if (!rawPath || typeof rawPath !== 'string') {
+      return;
+    }
+
+    try {
+      let target = rawPath.trim();
+      try {
+        target = decodeURIComponent(target);
+      } catch {}
+      target = target.replace(/^file:\/{1,3}/i, '');
+      try {
+        target = decodeURIComponent(target);
+      } catch {}
+
+      let startLine = 0;
+      let endLine = 0;
+      const lineHashMatch = target.match(/#L(\d+)(?:-L?(\d+))?$/i);
+      if (lineHashMatch) {
+        startLine = Math.max(0, parseInt(lineHashMatch[1], 10) - 1);
+        endLine = lineHashMatch[2] ? Math.max(0, parseInt(lineHashMatch[2], 10) - 1) : startLine;
+        target = target.replace(/#L\d+(?:-L?\d+)?$/i, '');
+      }
+
+      let cleanTarget = target.split('?')[0].trim();
+      if (process.platform === 'win32') {
+        cleanTarget = cleanTarget.replace(/^[\/\\]([a-zA-Z]:)/, '$1');
+        cleanTarget = path.normalize(cleanTarget);
+      }
+
+      // If relative path, resolve against current preview directory, or workspace
+      if (!path.isAbsolute(cleanTarget) && !/^[a-zA-Z]:[\\\/]/.test(cleanTarget)) {
+        const currentDir = path.dirname(this.filePath);
+        const candidate = path.resolve(currentDir, cleanTarget);
+        if (fs.existsSync(candidate)) {
+          cleanTarget = candidate;
+        } else if (vscode.workspace.workspaceFolders) {
+          for (const wf of vscode.workspace.workspaceFolders) {
+            const wfCandidate = path.resolve(wf.uri.fsPath, cleanTarget);
+            if (fs.existsSync(wfCandidate)) {
+              cleanTarget = wfCandidate;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!fs.existsSync(cleanTarget)) {
+        vscode.window.showWarningMessage(`File not found: ${cleanTarget}`);
+        return;
+      }
+
+      const fileUri = vscode.Uri.file(cleanTarget);
+      const isMd = cleanTarget.toLowerCase().endsWith('.md') || cleanTarget.toLowerCase().endsWith('.markdown');
+
+      if (openMode === 'rich' && isMd) {
+        // 1. Explicit request for Brain Hub Rich Preview (clicked 🔎)
+        MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
+        return;
+      } else if (openMode === 'ide' && isMd) {
+        // 2. Explicit request for IDE Built-in Preview (clicked 📄)
+        try {
+          await vscode.commands.executeCommand('markdown.showPreview', fileUri);
+          return;
+        } catch (err) {
+          console.warn('Could not open IDE markdown preview:', err);
+        }
+      } else if (isMd && startLine === 0 && endLine === 0) {
+        // 3. Clicked markdown file name without line range -> Default to Brain Hub Rich Preview
+        MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
+        return;
+      }
+
+      // 4. Open in text editor with line selection if line hash present
+      if (startLine > 0 || endLine > 0) {
+        try {
+          const doc = await vscode.workspace.openTextDocument(fileUri);
+          const opts: vscode.TextDocumentShowOptions = {
+            preview: false,
+            viewColumn: vscode.ViewColumn.Active,
+            selection: new vscode.Range(startLine, 0, endLine, 0)
+          };
+          await vscode.window.showTextDocument(doc, opts);
+          return;
+        } catch {}
+      }
+
+      // 5. Open any other file (binary images, png, svg, code, etc.) via default VS Code editor/viewer
+      try {
+        await vscode.commands.executeCommand('vscode.open', fileUri, { preview: false });
+      } catch (openErr) {
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+      }
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Failed to open target file: ${err?.message || err}`);
+    }
   }
 
   public update(): void {
@@ -1457,6 +1519,31 @@ export class MarkdownPreviewWebviewPanel {
           document.addEventListener('click', (e) => {
             const target = e.target && e.target.nodeType === 1 ? e.target : (e.target && e.target.parentElement ? e.target.parentElement : null);
             if (!target || typeof target.closest !== 'function') return;
+
+            // 1. Action buttons on Markdown links (🔎 and 📄)
+            const richBtn = target.closest('.rich-preview-btn');
+            if (richBtn) {
+              e.preventDefault();
+              e.stopPropagation();
+              let p = richBtn.getAttribute('data-filepath');
+              if (p) {
+                try { p = decodeURIComponent(p); } catch (err) {}
+                vscode.postMessage({ command: 'openRichPreview', filePath: p });
+              }
+              return;
+            }
+
+            const ideBtn = target.closest('.ide-preview-btn');
+            if (ideBtn) {
+              e.preventDefault();
+              e.stopPropagation();
+              let p = ideBtn.getAttribute('data-filepath');
+              if (p) {
+                try { p = decodeURIComponent(p); } catch (err) {}
+                vscode.postMessage({ command: 'openIdePreview', filePath: p });
+              }
+              return;
+            }
 
             const fileLink = target.closest('a.file-link, a[data-filepath], a[data-file-url], a[href^="file://"]');
             if (fileLink) {

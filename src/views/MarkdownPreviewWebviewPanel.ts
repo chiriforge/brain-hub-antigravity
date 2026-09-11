@@ -11,7 +11,7 @@ export class MarkdownPreviewWebviewPanel {
 
   private readonly panel: vscode.WebviewPanel;
   private readonly extensionUri: vscode.Uri;
-  private readonly filePath: string;
+  private filePath: string;
   private disposables: vscode.Disposable[] = [];
   private fsWatcher?: fs.FSWatcher;
 
@@ -270,7 +270,7 @@ export class MarkdownPreviewWebviewPanel {
           console.warn('Could not open IDE markdown preview:', err);
         }
       } else if (isMd && startLine === 0 && endLine === 0) {
-        // 3. Clicked markdown file name without line range -> Default to Brain Hub Rich Preview
+        // 3. Clicked markdown file name without line range -> Navigate current preview or reveal
         if (path.normalize(cleanTarget) === path.normalize(this.filePath)) {
           if (sectionAnchor) {
             this.panel.webview.postMessage({ command: 'scrollToAnchor', anchor: sectionAnchor });
@@ -280,11 +280,11 @@ export class MarkdownPreviewWebviewPanel {
           return;
         }
 
-        const preview = MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, targetColumn);
-        if (sectionAnchor && preview) {
+        this.navigateToFile(cleanTarget);
+        if (sectionAnchor) {
           setTimeout(() => {
             try {
-              preview.panel.webview.postMessage({ command: 'scrollToAnchor', anchor: sectionAnchor });
+              this.panel.webview.postMessage({ command: 'scrollToAnchor', anchor: sectionAnchor });
             } catch {}
           }, 300);
         }
@@ -315,6 +315,44 @@ export class MarkdownPreviewWebviewPanel {
     } catch (err: any) {
       vscode.window.showErrorMessage(`Failed to open target file: ${err?.message || err}`);
     }
+  }
+
+  public navigateToFile(newFilePath: string): void {
+    const normalizedNew = path.normalize(newFilePath);
+    const normalizedOld = path.normalize(this.filePath);
+    if (normalizedNew === normalizedOld) {
+      this.update();
+      return;
+    }
+
+    const existing = MarkdownPreviewWebviewPanel.panels.get(normalizedNew);
+    if (existing && existing !== this) {
+      existing.panel.reveal(this.panel.viewColumn || vscode.ViewColumn.Active);
+      existing.update();
+      return;
+    }
+
+    MarkdownPreviewWebviewPanel.panels.delete(normalizedOld);
+    if (this.fsWatcher) {
+      try {
+        this.fsWatcher.close();
+      } catch {}
+      this.fsWatcher = undefined;
+    }
+
+    this.filePath = normalizedNew;
+    MarkdownPreviewWebviewPanel.panels.set(normalizedNew, this);
+    this.panel.title = `Preview: ${path.basename(normalizedNew)}`;
+
+    try {
+      this.fsWatcher = fs.watch(normalizedNew, (event) => {
+        if (event === 'change') {
+          this.update();
+        }
+      });
+    } catch {}
+
+    this.update();
   }
 
   public update(): void {
@@ -1038,9 +1076,10 @@ export class MarkdownPreviewWebviewPanel {
           const mermaidScriptUri = '${mermaidUri}';
           let currentMermaidMode = 'sanitized'; // 'sanitized' | 'original'
 
-          // Retain scroll position across auto-updates
+          // Retain scroll position across auto-updates for this specific file
+          const currentDocKey = 'previewScrollPos_' + encodeURIComponent('${MarkdownRenderer.escapeHtml(this.filePath)}');
           window.addEventListener('load', () => {
-            const savedScroll = sessionStorage.getItem('previewScrollPos_' + location.href);
+            const savedScroll = sessionStorage.getItem(currentDocKey);
             if (savedScroll) {
               window.scrollTo(0, parseInt(savedScroll, 10));
             }
@@ -1054,7 +1093,7 @@ export class MarkdownPreviewWebviewPanel {
           }
 
           window.addEventListener('scroll', () => {
-            sessionStorage.setItem('previewScrollPos_' + location.href, window.scrollY);
+            sessionStorage.setItem(currentDocKey, window.scrollY);
           });
 
           function openInEditor() {
@@ -1689,7 +1728,8 @@ export class MarkdownPreviewWebviewPanel {
               }
 
               // External URL (http://, https://, mailto:)
-              if (/^https?:\/\//i.test(p) || /^mailto:/i.test(p)) {
+              const isExternal = p.startsWith('http://') || p.startsWith('https://') || p.startsWith('mailto:');
+              if (isExternal) {
                 e.preventDefault();
                 vscode.postMessage({ command: 'openExternal', url: p });
                 return;

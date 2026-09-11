@@ -108,7 +108,14 @@ async function run() {
     panel: { webview: { asWebviewUri: (u) => u } }
   };
   const mdHtml = mdProto.generateHtml.call(dummyMd, '# Architecture Test', path.resolve(__dirname, '../ARCHITECTURE.md'));
-  assertScriptsValid(mdHtml, 'MarkdownPreviewWebviewPanel');
+  assertScriptsValid(mdHtml, 'MarkdownPreviewWebviewPanel (ARCHITECTURE.md)');
+
+  // Test README_VI.md specifically
+  const viPath = path.resolve(__dirname, '../README_VI.md');
+  const viRaw = fs.readFileSync(viPath, 'utf8');
+  dummyMd.filePath = viPath;
+  const viHtml = mdProto.generateHtml.call(dummyMd, '<div>' + viRaw.slice(0, 200) + '</div>', viRaw);
+  assertScriptsValid(viHtml, 'MarkdownPreviewWebviewPanel (README_VI.md)');
   console.log('✓ MarkdownPreviewWebviewPanel scripts validated successfully');
 
   console.log('\n🎉 ALL WEBVIEW SCRIPTS PASSED SYNTAX VALIDATION!');

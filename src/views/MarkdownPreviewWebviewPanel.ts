@@ -99,6 +99,16 @@ export class MarkdownPreviewWebviewPanel {
             }
             return;
 
+          case 'openExternal':
+            if (message.url) {
+              try {
+                await vscode.env.openExternal(vscode.Uri.parse(message.url));
+              } catch (err: any) {
+                vscode.window.showErrorMessage(`Failed to open external link: ${err?.message || err}`);
+              }
+            }
+            return;
+
           case 'copyText':
             if (message.text) {
               await vscode.env.clipboard.writeText(message.text);
@@ -170,6 +180,14 @@ export class MarkdownPreviewWebviewPanel {
         target = target.replace(/#L\d+(?:-L?\d+)?$/i, '');
       }
 
+      // Extract and strip section anchor (#heading-name) if present
+      let sectionAnchor = '';
+      const hashIndex = target.indexOf('#');
+      if (hashIndex !== -1) {
+        sectionAnchor = target.substring(hashIndex + 1);
+        target = target.substring(0, hashIndex);
+      }
+
       let cleanTarget = target.split('?')[0].trim();
       if (process.platform === 'win32') {
         cleanTarget = cleanTarget.replace(/^[\/\\]([a-zA-Z]:)/, '$1');
@@ -200,10 +218,18 @@ export class MarkdownPreviewWebviewPanel {
 
       const fileUri = vscode.Uri.file(cleanTarget);
       const isMd = cleanTarget.toLowerCase().endsWith('.md') || cleanTarget.toLowerCase().endsWith('.markdown');
+      const targetColumn = this.panel.viewColumn || vscode.ViewColumn.Active;
 
       if (openMode === 'rich' && isMd) {
         // 1. Explicit request for Brain Hub Rich Preview (clicked 🔎)
-        MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
+        const preview = MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, targetColumn);
+        if (sectionAnchor && preview) {
+          setTimeout(() => {
+            try {
+              preview.panel.webview.postMessage({ command: 'scrollToAnchor', anchor: sectionAnchor });
+            } catch {}
+          }, 300);
+        }
         return;
       } else if (openMode === 'ide' && isMd) {
         // 2. Explicit request for IDE Built-in Preview (clicked 📄)
@@ -215,7 +241,23 @@ export class MarkdownPreviewWebviewPanel {
         }
       } else if (isMd && startLine === 0 && endLine === 0) {
         // 3. Clicked markdown file name without line range -> Default to Brain Hub Rich Preview
-        MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
+        if (path.normalize(cleanTarget) === path.normalize(this.filePath)) {
+          if (sectionAnchor) {
+            this.panel.webview.postMessage({ command: 'scrollToAnchor', anchor: sectionAnchor });
+          } else {
+            this.panel.webview.postMessage({ command: 'scrollToTop' });
+          }
+          return;
+        }
+
+        const preview = MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, targetColumn);
+        if (sectionAnchor && preview) {
+          setTimeout(() => {
+            try {
+              preview.panel.webview.postMessage({ command: 'scrollToAnchor', anchor: sectionAnchor });
+            } catch {}
+          }, 300);
+        }
         return;
       }
 
@@ -509,6 +551,19 @@ export class MarkdownPreviewWebviewPanel {
             color: var(--text-primary);
             word-wrap: break-word;
             line-height: 1.7;
+          }
+
+          .markdown-content a {
+            color: var(--accent-blue, #38bdf8);
+            text-decoration: underline;
+            text-underline-offset: 3px;
+            cursor: pointer;
+            transition: color 0.15s ease, filter 0.15s ease;
+          }
+
+          .markdown-content a:hover {
+            color: var(--accent-blue-hover, #7dd3fc);
+            filter: brightness(1.15);
           }
 
           .markdown-content h1,
@@ -1515,6 +1570,29 @@ export class MarkdownPreviewWebviewPanel {
               .replace(/'/g, '&#039;');
           }
 
+          // Host message listener (scroll to anchor / top)
+          window.addEventListener('message', (event) => {
+            const message = event.data;
+            if (!message) return;
+            if (message.command === 'scrollToAnchor' && message.anchor) {
+              try {
+                const id = message.anchor;
+                const decodedId = decodeURIComponent(id);
+                const safeId = window.CSS && CSS.escape ? CSS.escape(id) : id;
+                const safeDecodedId = window.CSS && CSS.escape ? CSS.escape(decodedId) : decodedId;
+                const el = document.getElementById(id) ||
+                           document.getElementById(decodedId) ||
+                           document.querySelector('[name="' + safeId + '"]') ||
+                           document.querySelector('[name="' + safeDecodedId + '"]');
+                if (el) {
+                  el.scrollIntoView({ behavior: 'smooth' });
+                }
+              } catch (err) {}
+            } else if (message.command === 'scrollToTop') {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          });
+
           // Handle link clicks inside preview
           document.addEventListener('click', (e) => {
             const target = e.target && e.target.nodeType === 1 ? e.target : (e.target && e.target.parentElement ? e.target.parentElement : null);
@@ -1545,14 +1623,52 @@ export class MarkdownPreviewWebviewPanel {
               return;
             }
 
-            const fileLink = target.closest('a.file-link, a[data-filepath], a[data-file-url], a[href^="file://"]');
-            if (fileLink) {
-              e.preventDefault();
-              let p = fileLink.getAttribute('data-filepath') || fileLink.getAttribute('data-file-url') || fileLink.getAttribute('href');
-              if (p && p !== '#' && p !== 'javascript:void(0)') {
-                try { p = decodeURIComponent(p); } catch (err) {}
-                vscode.postMessage({ command: 'openFile', filePath: p });
+            // 2. Intercept ANY anchor <a> click (Markdown links, raw HTML links, external URLs, file links, hash anchors)
+            const anchor = target.closest('a');
+            if (anchor) {
+              let p = anchor.getAttribute('data-filepath') || anchor.getAttribute('data-file-url');
+              const rawHref = anchor.getAttribute('href') || '';
+
+              if (!p && rawHref) {
+                p = rawHref;
               }
+
+              if (!p || p === '#' || p.startsWith('javascript:')) {
+                return;
+              }
+
+              // In-page hash anchor link (e.g. #installation or #cài-đặt)
+              if (p.startsWith('#')) {
+                e.preventDefault();
+                const targetId = p.slice(1);
+                if (targetId) {
+                  try {
+                    const decodedId = decodeURIComponent(targetId);
+                    const safeTargetId = window.CSS && CSS.escape ? CSS.escape(targetId) : targetId;
+                    const safeDecodedId = window.CSS && CSS.escape ? CSS.escape(decodedId) : decodedId;
+                    const el = document.getElementById(targetId) ||
+                               document.getElementById(decodedId) ||
+                               document.querySelector('[name="' + safeTargetId + '"]') ||
+                               document.querySelector('[name="' + safeDecodedId + '"]');
+                    if (el) {
+                      el.scrollIntoView({ behavior: 'smooth' });
+                    }
+                  } catch (err) {}
+                }
+                return;
+              }
+
+              // External URL (http://, https://, mailto:)
+              if (/^https?:\/\//i.test(p) || /^mailto:/i.test(p)) {
+                e.preventDefault();
+                vscode.postMessage({ command: 'openExternal', url: p });
+                return;
+              }
+
+              // Local file link (relative path, absolute path, file:// URI)
+              e.preventDefault();
+              try { p = decodeURIComponent(p); } catch (err) {}
+              vscode.postMessage({ command: 'openFile', filePath: p });
               return;
             }
 

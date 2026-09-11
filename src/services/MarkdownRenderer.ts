@@ -257,6 +257,12 @@ export class MarkdownRenderer {
         gfm: true,
         breaks: true,
         renderer: {
+          heading({ tokens, depth, text }: { tokens?: any[]; depth: number; text: string }) {
+            const plainText = text.replace(/<[^>]+>/g, '').trim();
+            const slug = plainText.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-');
+            const idAttr = slug ? ` id="${slug}"` : '';
+            return `<h${depth}${idAttr}>${text}</h${depth}>\n`;
+          },
           code({ text, lang }: { text: string; lang?: string }) {
             const language = (lang || 'plaintext').trim().toLowerCase();
             const displayLang = language || 'text';

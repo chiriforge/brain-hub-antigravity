@@ -24,9 +24,8 @@ An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, 
 |---|---|---|
 | **LaTeX Mathematics** | Raw unrendered text (`$$...$$`) | KaTeX rendered formulas with multi-line equation alignment |
 | **System Diagrams** | Raw Mermaid code block | Rendered interactive Mermaid SVG diagrams |
-| **Code Formatting** | Standard code block | Highlight.js syntax highlighting with line numbers, line wrap, and copy actions |
 | **Model Reasoning** | Expanded text output | Collapsible `Thinking` and `AI Steps` sections |
-| **Session Metadata** | Basic message stream | Live status, token count, message count, step index, and elapsed time |
+| **Session Metadata** | Basic message stream | Live status, execution step count, user message count, timeline, and workspace info |
 | **Session Operations** | None | Toolbar with Git sync, `.docs/` export, branch/fork, and raw transcript access |
 
 ---

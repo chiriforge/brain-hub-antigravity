@@ -212,6 +212,36 @@ export class MarkdownPreviewWebviewPanel {
       }
 
       if (!fs.existsSync(cleanTarget)) {
+        // Fallback: Check if an absolute path from an old or foreign directory matches a file in current workspace
+        const segments = cleanTarget.split(/[\\\/]/).filter(Boolean);
+        let foundCandidate = '';
+        const searchRoots = [
+          path.dirname(this.filePath),
+          ...(vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [])
+        ];
+
+        for (const root of searchRoots) {
+          for (let i = 0; i < segments.length; i++) {
+            const subpath = segments.slice(i).join(path.sep);
+            const candidate = path.resolve(root, subpath);
+            if (fs.existsSync(candidate)) {
+              try {
+                if (fs.statSync(candidate).isFile()) {
+                  foundCandidate = candidate;
+                  break;
+                }
+              } catch {}
+            }
+          }
+          if (foundCandidate) break;
+        }
+
+        if (foundCandidate) {
+          cleanTarget = foundCandidate;
+        }
+      }
+
+      if (!fs.existsSync(cleanTarget)) {
         vscode.window.showWarningMessage(`File not found: ${cleanTarget}`);
         return;
       }

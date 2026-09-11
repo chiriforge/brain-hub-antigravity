@@ -204,7 +204,7 @@ Key fields:
 
 ### 3.2. SessionScanner & Persistent Index Caching Engine
 
-Located in [`src/services/SessionScanner.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/SessionScanner.ts).
+Located in [`src/services/SessionScanner.ts`](./src/services/SessionScanner.ts).
 
 #### Design Pattern:
 Singleton accessed via `SessionScanner.getInstance()`.
@@ -270,7 +270,7 @@ sequenceDiagram
 
 ### 3.3. GitSyncService & Multi-Device Synchronization
 
-Located in [`src/services/GitSyncService.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/GitSyncService.ts).
+Located in [`src/services/GitSyncService.ts`](./src/services/GitSyncService.ts).
 
 #### Design Pattern:
 Singleton accessed via `GitSyncService.getInstance()`.
@@ -289,17 +289,17 @@ Singleton accessed via `GitSyncService.getInstance()`.
 
 ### 3.4. MarkdownRenderer & Offline Formatting Engine
 
-Located in [`src/services/MarkdownRenderer.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/MarkdownRenderer.ts).
+Located in [`src/services/MarkdownRenderer.ts`](./src/services/MarkdownRenderer.ts).
 
 #### Key Components:
 - **Offline Delivery**: Operates without external CDN dependencies. All scripts and stylesheets are bundled into the extension bundle.
 - **Marked.js Engine**: Configured with GitHub Flavored Markdown (GFM), table parsing, and syntax wrapping.
 - **Mathematical Typesetting (KaTeX)**:
   - Parses inline math (`$...$`) and block equations (`$$...$$`).
-  - KaTeX CSS and font declarations are embedded locally via [`KaTeXStyles.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/KaTeXStyles.ts) and [`KaTeXBaseCss.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/KaTeXBaseCss.ts).
+  - KaTeX CSS and font declarations are embedded locally via [`KaTeXStyles.ts`](./src/services/KaTeXStyles.ts) and [`KaTeXBaseCss.ts`](./src/services/KaTeXBaseCss.ts).
 - **Syntax Highlighting (Highlight.js)**:
   - Code blocks are tokenized using Highlight.js.
-  - Theme styling is supplied via [`HighlightStyles.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/HighlightStyles.ts).
+  - Theme styling is supplied via [`HighlightStyles.ts`](./src/services/HighlightStyles.ts).
 - **GitHub Alert Callouts**:
   - Replaces `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` markers with structured callout containers containing VS Code Codicon SVGs.
 - **Interactive Code Blocks**:
@@ -309,7 +309,7 @@ Located in [`src/services/MarkdownRenderer.ts`](file:///d:/source-code/antigravi
 
 ### 3.5. MermaidSanitizer & Syntax Normalization
 
-Located in [`src/services/MermaidSanitizer.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/MermaidSanitizer.ts).
+Located in [`src/services/MermaidSanitizer.ts`](./src/services/MermaidSanitizer.ts).
 
 #### Problem Addressed:
 Mermaid.js throws unhandled parse exceptions when diagram node labels or edge labels contain unescaped characters (colons, arrows, parentheses, comparison operators, ampersands, or slashes) without explicit double quotes.
@@ -334,7 +334,7 @@ Mermaid.js throws unhandled parse exceptions when diagram node labels or edge la
 
 ### 3.6. SecretSanitizer & Credential Redaction Engine
 
-Located in [`src/services/SecretSanitizer.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/SecretSanitizer.ts).
+Located in [`src/services/SecretSanitizer.ts`](./src/services/SecretSanitizer.ts).
 
 #### Purpose:
 Inspects prompts, AI responses, terminal logs, and tool execution payloads to redact sensitive credentials before exporting or archiving to public or shared locations.
@@ -362,7 +362,7 @@ User-defined regular expressions can be added via the configuration setting `bra
 
 ### 3.7. ProjectDocsArchiver & Documentation Exporter
 
-Located in [`src/services/ProjectDocsArchiver.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/ProjectDocsArchiver.ts).
+Located in [`src/services/ProjectDocsArchiver.ts`](./src/services/ProjectDocsArchiver.ts).
 
 #### Archival Pipeline:
 ```mermaid
@@ -405,18 +405,18 @@ flowchart TD
 
 The extension provides three distinct webview panels, each optimized for a specific workflow:
 
-#### 1. `DashboardWebviewPanel` ([`src/views/DashboardWebviewPanel.ts`](file:///d:/source-code/antigravity-history-viewer/src/views/DashboardWebviewPanel.ts)):
+#### 1. `DashboardWebviewPanel` ([`src/views/DashboardWebviewPanel.ts`](./src/views/DashboardWebviewPanel.ts)):
 - **Master-Detail Layout**: Left panel renders the categorized session list; right panel renders the selected conversation transcript.
 - **Filtering & Search**: Client-side full-text search across session IDs, titles, prompt text, and message content. Quick-toggle filters for current workspace and hiding empty sessions.
 - **Settings Modal**: In-webview configuration modal for modifying sort order, tool default state, auto-sync intervals, and archiver defaults without navigating to VS Code settings.
 - **Live FSWatcher**: Attaches an `fs.watch` instance to the active session's `transcript.jsonl`. When new assistant steps or user prompts are written by Antigravity, the webview reloads incrementally with a debounce delay.
 
-#### 2. `ChatWebviewPanel` ([`src/views/ChatWebviewPanel.ts`](file:///d:/source-code/antigravity-history-viewer/src/views/ChatWebviewPanel.ts)):
+#### 2. `ChatWebviewPanel` ([`src/views/ChatWebviewPanel.ts`](./src/views/ChatWebviewPanel.ts)):
 - Standalone reader tab for a single conversation trajectory.
 - Collapsible accordions for thinking tokens (`Thinking`), autonomous execution loops (`AI Steps`), and tool calls (`Tools`).
 - Raw payload viewer for inspecting API responses and tool arguments.
 
-#### 3. `MarkdownPreviewWebviewPanel` ([`src/views/MarkdownPreviewWebviewPanel.ts`](file:///d:/source-code/antigravity-history-viewer/src/views/MarkdownPreviewWebviewPanel.ts)):
+#### 3. `MarkdownPreviewWebviewPanel` ([`src/views/MarkdownPreviewWebviewPanel.ts`](./src/views/MarkdownPreviewWebviewPanel.ts)):
 - Standalone rich Markdown preview panel triggered by `brainHub.openRichMarkdownPreview`.
 - Renders Markdown documents containing KaTeX math equations, syntax-highlighted code blocks, and sanitized Mermaid diagrams.
 - Monitors the displayed file with an `fs.watch` listener to re-render upon external file modifications.
@@ -429,7 +429,7 @@ The extension provides three distinct webview panels, each optimized for a speci
 
 ### 3.9. Sidebar TreeView Provider & Grouping Engine
 
-Located in [`src/providers/ChatHistoryTreeProvider.ts`](file:///d:/source-code/antigravity-history-viewer/src/providers/ChatHistoryTreeProvider.ts).
+Located in [`src/providers/ChatHistoryTreeProvider.ts`](./src/providers/ChatHistoryTreeProvider.ts).
 
 #### Grouping Logic:
 Implements `vscode.TreeDataProvider<SessionTreeItem | TimeGroupTreeItem>`. Categorizes sessions into chronological buckets based on last modified date or creation date:
@@ -452,7 +452,7 @@ Implements `vscode.TreeDataProvider<SessionTreeItem | TimeGroupTreeItem>`. Categ
 
 ## 4. Data Models & Type Definitions
 
-Located in [`src/models/types.ts`](file:///d:/source-code/antigravity-history-viewer/src/models/types.ts):
+Located in [`src/models/types.ts`](./src/models/types.ts):
 
 ```typescript
 export interface ToolCallInfo {
@@ -642,7 +642,7 @@ npm install
 | `npm run package` | Builds the production bundle and packages into a `.vsix` archive via `@vscode/vsce`. |
 | `npm run release` | Runs `./scripts/release.js` to verify Git tag consistency and build release assets. |
 
-#### Esbuild Configuration ([`esbuild.js`](file:///d:/source-code/antigravity-history-viewer/esbuild.js)):
+#### Esbuild Configuration ([`esbuild.js`](./esbuild.js)):
 ```javascript
 const esbuild = require('esbuild');
 
@@ -690,7 +690,7 @@ esbuild.build({
 ## 7. Extending the Extension (Step-by-Step Guide)
 
 ### Example A: Registering a New Command
-1. Declare the command in [`package.json`](file:///d:/source-code/antigravity-history-viewer/package.json) under `contributes.commands`:
+1. Declare the command in [`package.json`](./package.json) under `contributes.commands`:
    ```json
    {
      "command": "brainHub.inspectSessionMetrics",
@@ -699,7 +699,7 @@ esbuild.build({
      "icon": "$(graph)"
    }
    ```
-2. Register the command handler in [`src/extension.ts`](file:///d:/source-code/antigravity-history-viewer/src/extension.ts):
+2. Register the command handler in [`src/extension.ts`](./src/extension.ts):
    ```typescript
    context.subscriptions.push(
      vscode.commands.registerCommand('brainHub.inspectSessionMetrics', async (item?: SessionTreeItem) => {
@@ -718,7 +718,7 @@ esbuild.build({
    ```
 
 ### Example B: Handling Messages in `DashboardWebviewPanel`
-1. Add an action button in the HTML rendering method inside [`src/views/DashboardWebviewPanel.ts`](file:///d:/source-code/antigravity-history-viewer/src/views/DashboardWebviewPanel.ts):
+1. Add an action button in the HTML rendering method inside [`src/views/DashboardWebviewPanel.ts`](./src/views/DashboardWebviewPanel.ts):
    ```html
    <button class="action-btn" onclick="requestSessionArchive('${session.id}')">
      Archive Session
@@ -738,7 +738,7 @@ esbuild.build({
    ```
 
 ### Example C: Adding a Custom Rule to `SecretSanitizer`
-1. Define the rule in `SecretSanitizer.BUILT_IN_RULES` inside [`src/services/SecretSanitizer.ts`](file:///d:/source-code/antigravity-history-viewer/src/services/SecretSanitizer.ts):
+1. Define the rule in `SecretSanitizer.BUILT_IN_RULES` inside [`src/services/SecretSanitizer.ts`](./src/services/SecretSanitizer.ts):
    ```typescript
    {
      name: 'Custom Service Token',

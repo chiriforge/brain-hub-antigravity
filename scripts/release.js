@@ -57,7 +57,7 @@ try {
   execSync('npm run build', { stdio: 'inherit', cwd: path.resolve(__dirname, '..') });
 
   console.log(`\n📦 Packaging VSIX with @vscode/vsce...`);
-  execSync('npx @vscode/vsce package --no-dependencies', { stdio: 'inherit', cwd: path.resolve(__dirname, '..') });
+  execSync('npx @vscode/vsce package --no-dependencies --no-rewrite-relative-links', { stdio: 'inherit', cwd: path.resolve(__dirname, '..') });
 
   const vsixName = `${pkg.name || 'brain-hub-antigravity'}-${targetVersion}.vsix`;
   console.log(`\n🎉 Release build successful!`);

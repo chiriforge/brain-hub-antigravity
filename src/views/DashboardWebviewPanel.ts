@@ -442,12 +442,13 @@ export class DashboardWebviewPanel {
     }
 
     let filePath = rawPath.trim();
-    if (filePath.startsWith('file://')) {
-      filePath = filePath.replace(/^file:\/\/\/?/i, '');
-      try {
-        filePath = decodeURIComponent(filePath);
-      } catch {}
-    }
+    try {
+      filePath = decodeURIComponent(filePath);
+    } catch {}
+    filePath = filePath.replace(/^file:\/{1,3}/i, '');
+    try {
+      filePath = decodeURIComponent(filePath);
+    } catch {}
 
     let startLine = 0;
     let endLine = 0;

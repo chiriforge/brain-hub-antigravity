@@ -86,15 +86,43 @@ export class MarkdownPreviewWebviewPanel {
           case 'openFile':
             if (message.filePath) {
               try {
-                let target = message.filePath;
-                if (target.startsWith('file://')) {
-                  target = decodeURIComponent(target.replace(/^file:\/\/\/?/i, ''));
-                }
-                let cleanTarget = target.split('#')[0].split('?')[0];
+                let target = message.filePath.trim();
+                try {
+                  target = decodeURIComponent(target);
+                } catch {}
+                target = target.replace(/^file:\/{1,3}/i, '');
+                try {
+                  target = decodeURIComponent(target);
+                } catch {}
+
+                let cleanTarget = target.split('#')[0].split('?')[0].trim();
                 if (process.platform === 'win32') {
                   cleanTarget = cleanTarget.replace(/^[\/\\]([a-zA-Z]:)/, '$1');
                   cleanTarget = path.normalize(cleanTarget);
                 }
+
+                // If relative path, resolve against current preview directory, or workspace
+                if (!path.isAbsolute(cleanTarget) && !/^[a-zA-Z]:[\\\/]/.test(cleanTarget)) {
+                  const currentDir = path.dirname(this.filePath);
+                  const candidate = path.resolve(currentDir, cleanTarget);
+                  if (fs.existsSync(candidate)) {
+                    cleanTarget = candidate;
+                  } else if (vscode.workspace.workspaceFolders) {
+                    for (const wf of vscode.workspace.workspaceFolders) {
+                      const wfCandidate = path.resolve(wf.uri.fsPath, cleanTarget);
+                      if (fs.existsSync(wfCandidate)) {
+                        cleanTarget = wfCandidate;
+                        break;
+                      }
+                    }
+                  }
+                }
+
+                if (!fs.existsSync(cleanTarget)) {
+                  vscode.window.showWarningMessage(`File not found: ${cleanTarget}`);
+                  return;
+                }
+
                 const isMd = cleanTarget.toLowerCase().endsWith('.md') || cleanTarget.toLowerCase().endsWith('.markdown');
                 if (isMd) {
                   MarkdownPreviewWebviewPanel.createOrShow(this.extensionUri, cleanTarget, vscode.ViewColumn.Active);
@@ -1435,6 +1463,7 @@ export class MarkdownPreviewWebviewPanel {
               e.preventDefault();
               let p = fileLink.getAttribute('data-filepath') || fileLink.getAttribute('data-file-url') || fileLink.getAttribute('href');
               if (p && p !== '#' && p !== 'javascript:void(0)') {
+                try { p = decodeURIComponent(p); } catch (err) {}
                 vscode.postMessage({ command: 'openFile', filePath: p });
               }
               return;

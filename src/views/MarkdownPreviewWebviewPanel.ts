@@ -575,6 +575,19 @@ export class MarkdownPreviewWebviewPanel {
             transform-origin: center center;
           }
 
+          /* Prevent SVG text clipping on descenders (y, g, p, q, j) */
+          .mermaid-body svg .node foreignObject,
+          .mermaid-body svg .edgeLabel foreignObject {
+            overflow: visible !important;
+          }
+
+          .mermaid-body svg .node foreignObject > div,
+          .mermaid-body svg .edgeLabel foreignObject > div {
+            padding: 4px 8px !important;
+            line-height: 1.4 !important;
+            box-sizing: border-box;
+          }
+
           /* Mode allowing natural 100% width with horizontal scroll for wide diagrams */
           .mermaid-card.scroll-mode .mermaid-body {
             justify-content: flex-start;
@@ -1055,10 +1068,17 @@ export class MarkdownPreviewWebviewPanel {
               const isLight = document.body.classList.contains('vscode-light');
               mermaid.initialize({
                 startOnLoad: false,
-                theme: isLight ? 'default' : 'dark',
+                theme: isLight ? 'neutral' : 'dark',
                 securityLevel: 'loose',
                 fontFamily: 'var(--font-family)',
-                flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+                flowchart: {
+                  useMaxWidth: true,
+                  htmlLabels: true,
+                  curve: 'basis',
+                  nodeSpacing: 35,
+                  rankSpacing: 35,
+                  padding: 16
+                }
               });
             } catch (initErr) {
               console.warn('Mermaid initialize warning:', initErr);

@@ -1576,6 +1576,19 @@ export class ChatWebviewPanel {
             height: auto;
           }
 
+          /* Prevent SVG text clipping on descenders (y, g, p, q, j) */
+          .mermaid-body svg .node foreignObject,
+          .mermaid-body svg .edgeLabel foreignObject {
+            overflow: visible !important;
+          }
+
+          .mermaid-body svg .node foreignObject > div,
+          .mermaid-body svg .edgeLabel foreignObject > div {
+            padding: 4px 8px !important;
+            line-height: 1.4 !important;
+            box-sizing: border-box;
+          }
+
           .mermaid-error-card {
             background: rgba(241, 76, 76, 0.08);
             border: 1px solid rgba(241, 76, 76, 0.35);
@@ -2747,9 +2760,16 @@ export class ChatWebviewPanel {
             try {
               mermaid.initialize({
                 startOnLoad: false,
-                theme: document.body.classList.contains('vscode-light') ? 'default' : 'dark',
+                theme: document.body.classList.contains('vscode-light') ? 'neutral' : 'dark',
                 securityLevel: 'loose',
-                flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+                flowchart: {
+                  useMaxWidth: true,
+                  htmlLabels: true,
+                  curve: 'basis',
+                  nodeSpacing: 35,
+                  rankSpacing: 35,
+                  padding: 16
+                }
               });
             } catch (e) {}
 

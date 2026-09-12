@@ -5,11 +5,26 @@
   <a href="./USER_GUIDE.md"><b>English</b></a> | <a href="./USER_GUIDE_VI.md"><b>Tiếng Việt</b></a>
 </p>
 
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity"><img src="https://img.shields.io/visual-studio-marketplace/v/chiriforge.brain-hub-antigravity?color=blue&label=VS%20Marketplace&logo=visual-studio-code" alt="Visual Studio Marketplace"></a>
+  <a href="https://open-vsx.org/extension/chiriforge/brain-hub-antigravity"><img src="https://img.shields.io/open-vsx/v/chiriforge/brain-hub-antigravity?color=purple&label=Open%20VSX&logo=open-vsx" alt="Open VSX"></a>
+  <a href="https://github.com/chiriforge/brain-hub-antigravity/releases"><img src="https://img.shields.io/github/v/release/chiriforge/brain-hub-antigravity?color=blue&logo=github" alt="GitHub Release"></a>
+</p>
+
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity">Visual Studio Marketplace</a> | 
+  <a href="https://open-vsx.org/extension/chiriforge/brain-hub-antigravity">Open VSX Registry</a> | 
+  <a href="./README_VI.md">README (Tiếng Việt)</a>
+</p>
+
 ---
 
 ## Mục Lục
 1. [Tổng Quan](#1-tổng-quan)
 2. [Cài Đặt](#2-cài-đặt)
+   - [Lựa chọn 1: Cài đặt từ Extension Marketplace](#lựa-chọn-1-cài-đặt-từ-extension-marketplace-khuyến-nghị)
+   - [Lựa chọn 2: Cài từ file .vsix](#lựa-chọn-2-cài-từ-file-vsix)
+   - [Lựa chọn 3: Chạy từ mã nguồn](#lựa-chọn-3-chạy-từ-mã-nguồn)
 3. [Giao Diện Người Dùng](#3-giao-diện-người-dùng)
    - [3.1. Bảng Điều Khiển Brain Hub Dashboard](#31-bảng-điều-khiển-brain-hub-dashboard)
    - [3.2. Cây Thư Mục Sidebar](#32-cây-thư-mục-sidebar)
@@ -52,7 +67,17 @@ Chức năng chính:
 
 ## 2. Cài Đặt
 
-### Lựa chọn 1: Cài từ file `.vsix`
+### Lựa chọn 1: Cài đặt từ Extension Marketplace (Khuyến nghị)
+Cài đặt trực tiếp từ chợ tiện ích trong VS Code hoặc các trình biên tập tương thích Open VSX (như VSCodium, Gitpod):
+- **Visual Studio Marketplace**: [Brain Hub for Antigravity trên VS Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity)
+- **Open VSX Registry**: [Brain Hub for Antigravity trên Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity)
+
+Cài đặt thông qua dòng lệnh:
+```bash
+code --install-extension chiriforge.brain-hub-antigravity
+```
+
+### Lựa chọn 2: Cài từ file `.vsix`
 1. Tải file `brain-hub-antigravity-0.5.1.vsix` từ mục [Releases trên GitHub](https://github.com/chiriforge/brain-hub-antigravity/releases).
 2. Trong VS Code hoặc Antigravity IDE, nhấn `Ctrl + Shift + X` để mở Extensions.
 3. Nhấp vào biểu tượng menu `...` ở góc trên bên phải khung Extensions và chọn **Install from VSIX...**.
@@ -63,7 +88,7 @@ Hoặc cài qua terminal:
 code --install-extension brain-hub-antigravity-0.5.1.vsix
 ```
 
-### Lựa chọn 2: Chạy từ mã nguồn
+### Lựa chọn 3: Chạy từ mã nguồn
 ```bash
 git clone https://github.com/chiriforge/brain-hub-antigravity.git
 cd brain-hub-antigravity

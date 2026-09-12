@@ -5,6 +5,8 @@
 </p>
 
 <p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity"><img src="https://img.shields.io/visual-studio-marketplace/v/chiriforge.brain-hub-antigravity?color=blue&label=VS%20Marketplace&logo=visual-studio-code" alt="Visual Studio Marketplace"></a>
+  <a href="https://open-vsx.org/extension/chiriforge/brain-hub-antigravity"><img src="https://img.shields.io/open-vsx/v/chiriforge/brain-hub-antigravity?color=purple&label=Open%20VSX&logo=open-vsx" alt="Open VSX"></a>
   <a href="https://github.com/chiriforge/brain-hub-antigravity/releases"><img src="https://img.shields.io/github/v/release/chiriforge/brain-hub-antigravity?color=blue&logo=github" alt="GitHub Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-purple.svg" alt="License"></a>
   <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/Platform-VS%20Code%20%7C%20Antigravity%20IDE-orange.svg" alt="Platform"></a>
@@ -12,7 +14,7 @@
 
 An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, resume, archive, and sync local Antigravity brain sessions.
 
-[User Guide (English)](./USER_GUIDE.md) | [User Guide (Tiếng Việt)](./USER_GUIDE_VI.md) | [Architecture & Developer Guide](./ARCHITECTURE.md)
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity) | [Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity) | [User Guide (English)](./USER_GUIDE.md) | [User Guide (Tiếng Việt)](./USER_GUIDE_VI.md) | [Architecture & Developer Guide](./ARCHITECTURE.md)
 
 <p align="center">
   <img src="./media/showcase-chat-reader.png" alt="Brain Hub Chat Reader Webview Showcase" width="100%">
@@ -84,6 +86,16 @@ An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, 
 ---
 
 ## Installation
+
+### From Marketplace (Recommended)
+Install directly from your editor's extension marketplace or via CLI:
+- **Visual Studio Marketplace**: [Install Brain Hub for Antigravity](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity)
+- **Open VSX Registry**: [Install from Open VSX](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity)
+
+Install via terminal:
+```bash
+code --install-extension chiriforge.brain-hub-antigravity
+```
 
 ### From `.vsix` Package
 1. Download the `.vsix` file from [GitHub Releases](https://github.com/chiriforge/brain-hub-antigravity/releases).
@@ -176,7 +188,9 @@ Configure in VS Code Settings (`Ctrl + ,` $\rightarrow$ search `brainHub`):
 
 ---
 
-## Documentation
+## Documentation & Marketplace Links
+- [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity)
+- [Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity)
 - [User Guide (English)](./USER_GUIDE.md)
 - [User Guide (Tiếng Việt)](./USER_GUIDE_VI.md)
 - [Architecture & Developer Guide](./ARCHITECTURE.md)

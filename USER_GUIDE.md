@@ -5,11 +5,26 @@
   <a href="./USER_GUIDE.md"><b>English</b></a> | <a href="./USER_GUIDE_VI.md"><b>Tiếng Việt</b></a>
 </p>
 
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity"><img src="https://img.shields.io/visual-studio-marketplace/v/chiriforge.brain-hub-antigravity?color=blue&label=VS%20Marketplace&logo=visual-studio-code" alt="Visual Studio Marketplace"></a>
+  <a href="https://open-vsx.org/extension/chiriforge/brain-hub-antigravity"><img src="https://img.shields.io/open-vsx/v/chiriforge/brain-hub-antigravity?color=purple&label=Open%20VSX&logo=open-vsx" alt="Open VSX"></a>
+  <a href="https://github.com/chiriforge/brain-hub-antigravity/releases"><img src="https://img.shields.io/github/v/release/chiriforge/brain-hub-antigravity?color=blue&logo=github" alt="GitHub Release"></a>
+</p>
+
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity">Visual Studio Marketplace</a> | 
+  <a href="https://open-vsx.org/extension/chiriforge/brain-hub-antigravity">Open VSX Registry</a> | 
+  <a href="./README.md">README</a>
+</p>
+
 ---
 
 ## Table of Contents
 1. [Overview](#1-overview)
 2. [Installation](#2-installation)
+   - [Option 1: Install from Marketplace](#option-1-install-from-marketplace-recommended)
+   - [Option 2: Install from .vsix Package](#option-2-install-from-vsix-package)
+   - [Option 3: Build and Run from Source](#option-3-build-and-run-from-source)
 3. [User Interfaces](#3-user-interfaces)
    - [3.1. Brain Hub Dashboard](#31-brain-hub-dashboard)
    - [3.2. Sidebar Tree View](#32-sidebar-tree-view)
@@ -52,7 +67,17 @@ Core capabilities:
 
 ## 2. Installation
 
-### Option 1: Install from `.vsix` Package
+### Option 1: Install from Marketplace (Recommended)
+Install directly from the extensions registry in VS Code or any Open VSX compatible editor (such as VSCodium or Gitpod):
+- **Visual Studio Marketplace**: [Brain Hub for Antigravity](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity)
+- **Open VSX Registry**: [Brain Hub for Antigravity](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity)
+
+Install via terminal:
+```bash
+code --install-extension chiriforge.brain-hub-antigravity
+```
+
+### Option 2: Install from `.vsix` Package
 1. Download `brain-hub-antigravity-0.5.1.vsix` from [GitHub Releases](https://github.com/chiriforge/brain-hub-antigravity/releases).
 2. In VS Code or Antigravity IDE, press `Ctrl + Shift + X` to open Extensions.
 3. Click the `...` menu icon in the top-right corner of the Extensions pane and choose **Install from VSIX...**.
@@ -63,7 +88,7 @@ Or install via terminal:
 code --install-extension brain-hub-antigravity-0.5.1.vsix
 ```
 
-### Option 2: Build and Run from Source
+### Option 3: Build and Run from Source
 ```bash
 git clone https://github.com/chiriforge/brain-hub-antigravity.git
 cd brain-hub-antigravity

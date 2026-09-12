@@ -9,7 +9,8 @@
   <a href="https://open-vsx.org/extension/chiriforge/brain-hub-antigravity"><img src="https://img.shields.io/open-vsx/v/chiriforge/brain-hub-antigravity?color=purple&label=Open%20VSX&logo=open-vsx" alt="Open VSX"></a>
   <a href="https://github.com/chiriforge/brain-hub-antigravity/releases"><img src="https://img.shields.io/github/v/release/chiriforge/brain-hub-antigravity?color=blue&logo=github" alt="GitHub Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-purple.svg" alt="License"></a>
-  <a href="https://code.visualstudio.com/"><img src="https://img.shields.io/badge/Platform-VS%20Code%20%7C%20Antigravity%20IDE-orange.svg" alt="Platform"></a>
+  <a href="https://code.visualstudio.com/Download"><img src="https://badgen.net/badge/VS%20Code/^1.80.0/007ACC?icon=visualstudio" alt="VS Code"></a>
+  <a href="https://antigravity.google"><img src="https://badgen.net/badge/Antigravity%20IDE/Compatible/EA4335?icon=google" alt="Antigravity IDE"></a>
 </p>
 
 An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, resume, archive, and sync local Antigravity brain sessions.

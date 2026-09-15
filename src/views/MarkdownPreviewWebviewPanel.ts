@@ -2439,7 +2439,7 @@ export class MarkdownPreviewWebviewPanel {
                       '<div class="mermaid-actions">' +
                         '<button class="mermaid-btn" onclick="toggleDiagramFit(this)" title="Toggle 100% scrollable size or fit to width"><i class="codicon codicon-arrow-both"></i> <span class="fit-label">Scroll</span></button>' +
                         '<button class="mermaid-btn" onclick="toggleSourceView(this)" title="View Mermaid source code"><i class="codicon codicon-code"></i> Source</button>' +
-                        '<button class="mermaid-btn" onclick="copyMermaidCode(\\'' + encodedRaw + '\\')" title="Copy raw Mermaid code"><i class="codicon codicon-copy"></i> Copy</button>' +
+                        '<button class="mermaid-btn" data-raw-code="' + escapeHtml(encodedRaw) + '" onclick="copyMermaidCode(this)" title="Copy raw Mermaid code"><i class="codicon codicon-copy"></i> Copy</button>' +
                         '<button class="mermaid-btn" onclick="openFullscreen(this)" title="View diagram in fullscreen"><i class="codicon codicon-screen-full"></i> Fullscreen</button>' +
                       '</div>' +
                     '</div>' +
@@ -2452,6 +2452,7 @@ export class MarkdownPreviewWebviewPanel {
 
                 const errMsg = renderErr && renderErr.message ? renderErr.message : String(renderErr);
                 const encodedRaw = encodeURIComponent(rawCode);
+                const encodedErr = encodeURIComponent(errMsg);
 
                 el.innerHTML =
                   '<div class="mermaid-error-card">' +
@@ -2461,8 +2462,8 @@ export class MarkdownPreviewWebviewPanel {
                         (currentMermaidMode === 'original'
                           ? '<button class="mermaid-btn primary" onclick="setMermaidMode(\\'sanitized\\')" title="Switch to auto-sanitized mode to try auto-fixing syntax"><i class="codicon codicon-sparkle"></i> Try Auto-Fix</button>'
                           : '') +
-                        '<button class="mermaid-btn" onclick="copyMermaidFixPrompt(\\'' + encodedRaw + '\\', \\'' + encodeURIComponent(errMsg) + '\\')" title="Copy AI prompt to fix this Mermaid syntax"><i class="codicon codicon-robot"></i> Fix with AI</button>' +
-                        '<button class="mermaid-btn" onclick="copyMermaidCode(\\'' + encodedRaw + '\\')" title="Copy raw code"><i class="codicon codicon-copy"></i> Copy</button>' +
+                        '<button class="mermaid-btn" data-raw-code="' + escapeHtml(encodedRaw) + '" data-err-msg="' + escapeHtml(encodedErr) + '" onclick="copyMermaidFixPrompt(this)" title="Copy AI prompt to fix this Mermaid syntax"><i class="codicon codicon-robot"></i> Fix with AI</button>' +
+                        '<button class="mermaid-btn" data-raw-code="' + escapeHtml(encodedRaw) + '" onclick="copyMermaidCode(this)" title="Copy raw code"><i class="codicon codicon-copy"></i> Copy</button>' +
                       '</div>' +
                     '</div>' +
                     '<div class="mermaid-error-body">' +
@@ -2498,12 +2499,15 @@ export class MarkdownPreviewWebviewPanel {
             }
           }
 
-          function copyMermaidCode(encodedCode) {
+          function copyMermaidCode(target) {
+            const encodedCode = typeof target === 'string' ? target : (target && target.getAttribute ? target.getAttribute('data-raw-code') || '' : '');
             const code = decodeURIComponent(encodedCode);
             vscode.postMessage({ command: 'copyText', text: code, toast: 'Mermaid code copied to clipboard!' });
           }
 
-          function copyMermaidFixPrompt(encodedCode, encodedErr) {
+          function copyMermaidFixPrompt(target, directErr) {
+            const encodedCode = typeof target === 'string' ? target : (target && target.getAttribute ? target.getAttribute('data-raw-code') || '' : '');
+            const encodedErr = typeof directErr === 'string' ? directErr : (target && target.getAttribute ? target.getAttribute('data-err-msg') || '' : '');
             const code = decodeURIComponent(encodedCode);
             const err = decodeURIComponent(encodedErr);
             const fence = String.fromCharCode(96, 96, 96);

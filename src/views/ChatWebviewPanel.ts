@@ -3719,13 +3719,13 @@ export class ChatWebviewPanel {
                         '<span>🤖 Copy AI Fix Request</span>' +
                       '</button>' +
                     '</div>' +
-                    '<div class="mermaid-error-desc">Mermaid chart syntax error: <code>' + errMsg + '</code></div>' +
+                    '<div class="mermaid-error-desc">Mermaid chart syntax error: <code>' + escapeHtml(errMsg) + '</code></div>' +
                     '<div class="code-container" data-language="mermaid">' +
                       '<div class="code-header">' +
                         '<span class="code-lang-badge">MERMAID SOURCE</span>' +
                         '<button class="copy-code-btn" data-code="' + encodeURIComponent(rawCode) + '"><span>Copy</span></button>' +
                       '</div>' +
-                      '<pre><code class="language-mermaid">' + rawCode + '</code></pre>' +
+                      '<pre><code class="language-mermaid">' + escapeHtml(rawCode) + '</code></pre>' +
                     '</div>' +
                   '</div>';
               }

@@ -3248,6 +3248,15 @@ export class DashboardWebviewPanel {
             white-space: nowrap !important;
           }
 
+          /* Force legibility on all inner text/span elements in edge labels (prevents black text on dark background) */
+          .mermaid-body svg .edgeLabel foreignObject > div *,
+          .mermaid-body svg .edgeLabel span,
+          .mermaid-body svg .edgeLabel p,
+          .mermaid-body svg .edgeLabel text {
+            color: var(--vscode-editorWidget-foreground, var(--text-primary, #cccccc)) !important;
+            fill: var(--vscode-editorWidget-foreground, var(--text-primary, #cccccc)) !important;
+          }
+
           /* Fallback for SVG native text edge labels if foreignObject is not used */
           .mermaid-body svg .edgeLabel rect {
             rx: 4px !important;
@@ -5743,6 +5752,8 @@ export class DashboardWebviewPanel {
                   clusterBkg: 'rgba(241, 245, 249, 0.65)',
                   clusterBorder: '#cbd5e1',
                   edgeLabelBackground: 'transparent',
+                  edgeLabelColor: '#0f172a',
+                  textColor: '#0f172a',
                   nodeBorder: '#94a3b8'
                 } : {
                   fontFamily: 'var(--font-family)',
@@ -5755,6 +5766,8 @@ export class DashboardWebviewPanel {
                   clusterBkg: 'rgba(30, 41, 59, 0.45)',
                   clusterBorder: '#475569',
                   edgeLabelBackground: 'transparent',
+                  edgeLabelColor: '#e2e8f0',
+                  textColor: '#e2e8f0',
                   nodeBorder: '#475569'
                 }
               });

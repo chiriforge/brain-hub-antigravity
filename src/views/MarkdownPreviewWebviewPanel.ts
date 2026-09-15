@@ -1295,11 +1295,17 @@ export class MarkdownPreviewWebviewPanel {
 
           /* Prevent SVG text clipping on descenders (y, g, p, q, j) */
           .mermaid-body svg .node foreignObject,
-          .mermaid-body svg .edgeLabel foreignObject {
+          .mermaid-body svg .edgeLabel foreignObject,
+          #modalContent svg .node foreignObject,
+          #modalContent svg .edgeLabel foreignObject,
+          .modal-canvas-content svg .node foreignObject,
+          .modal-canvas-content svg .edgeLabel foreignObject {
             overflow: visible !important;
           }
 
-          .mermaid-body svg .node foreignObject > div {
+          .mermaid-body svg .node foreignObject > div,
+          #modalContent svg .node foreignObject > div,
+          .modal-canvas-content svg .node foreignObject > div {
             display: flex !important;
             flex-direction: column !important;
             align-items: center !important;
@@ -1312,13 +1318,17 @@ export class MarkdownPreviewWebviewPanel {
           }
 
           /* Modern Floating Pill Edge Label (Option A) */
-          .mermaid-body svg .edgeLabel {
+          .mermaid-body svg .edgeLabel,
+          #modalContent svg .edgeLabel,
+          .modal-canvas-content svg .edgeLabel {
             font-size: 11.5px !important;
             font-family: var(--font-family) !important;
             background-color: transparent !important;
           }
 
-          .mermaid-body svg .edgeLabel foreignObject > div {
+          .mermaid-body svg .edgeLabel foreignObject > div,
+          #modalContent svg .edgeLabel foreignObject > div,
+          .modal-canvas-content svg .edgeLabel foreignObject > div {
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
@@ -1335,8 +1345,27 @@ export class MarkdownPreviewWebviewPanel {
             white-space: nowrap !important;
           }
 
+          /* Force legibility on all inner text/span elements in edge labels (prevents black text on dark background) */
+          .mermaid-body svg .edgeLabel foreignObject > div *,
+          .mermaid-body svg .edgeLabel span,
+          .mermaid-body svg .edgeLabel p,
+          .mermaid-body svg .edgeLabel text,
+          #modalContent svg .edgeLabel foreignObject > div *,
+          #modalContent svg .edgeLabel span,
+          #modalContent svg .edgeLabel p,
+          #modalContent svg .edgeLabel text,
+          .modal-canvas-content svg .edgeLabel foreignObject > div *,
+          .modal-canvas-content svg .edgeLabel span,
+          .modal-canvas-content svg .edgeLabel p,
+          .modal-canvas-content svg .edgeLabel text {
+            color: var(--vscode-editorWidget-foreground, var(--text-primary, #cccccc)) !important;
+            fill: var(--vscode-editorWidget-foreground, var(--text-primary, #cccccc)) !important;
+          }
+
           /* Fallback for SVG native text edge labels if foreignObject is not used */
-          .mermaid-body svg .edgeLabel rect {
+          .mermaid-body svg .edgeLabel rect,
+          #modalContent svg .edgeLabel rect,
+          .modal-canvas-content svg .edgeLabel rect {
             rx: 4px !important;
             ry: 4px !important;
             fill: var(--vscode-editorWidget-background, var(--code-bg, #1e1e1e)) !important;
@@ -1344,7 +1373,9 @@ export class MarkdownPreviewWebviewPanel {
             stroke-width: 1px !important;
           }
 
-          .mermaid-body svg .cluster rect {
+          .mermaid-body svg .cluster rect,
+          #modalContent svg .cluster rect,
+          .modal-canvas-content svg .cluster rect {
             stroke-dasharray: 4 4;
             stroke-width: 1.5px !important;
             rx: 8px !important;
@@ -1353,7 +1384,13 @@ export class MarkdownPreviewWebviewPanel {
 
           .mermaid-body svg .cluster .label,
           .mermaid-body svg .cluster span.nodeLabel,
-          .mermaid-body svg .cluster .cluster-label {
+          .mermaid-body svg .cluster .cluster-label,
+          #modalContent svg .cluster .label,
+          #modalContent svg .cluster span.nodeLabel,
+          #modalContent svg .cluster .cluster-label,
+          .modal-canvas-content svg .cluster .label,
+          .modal-canvas-content svg .cluster span.nodeLabel,
+          .modal-canvas-content svg .cluster .cluster-label {
             font-weight: 600 !important;
             font-size: 13px !important;
             letter-spacing: 0.3px;
@@ -1361,7 +1398,13 @@ export class MarkdownPreviewWebviewPanel {
 
           .mermaid-body svg .node rect,
           .mermaid-body svg .node polygon,
-          .mermaid-body svg .node circle {
+          .mermaid-body svg .node circle,
+          #modalContent svg .node rect,
+          #modalContent svg .node polygon,
+          #modalContent svg .node circle,
+          .modal-canvas-content svg .node rect,
+          .modal-canvas-content svg .node polygon,
+          .modal-canvas-content svg .node circle {
             rx: 6px !important;
             ry: 6px !important;
           }
@@ -2493,6 +2536,8 @@ export class MarkdownPreviewWebviewPanel {
                   clusterBkg: 'rgba(241, 245, 249, 0.65)',
                   clusterBorder: '#cbd5e1',
                   edgeLabelBackground: 'transparent',
+                  edgeLabelColor: '#0f172a',
+                  textColor: '#0f172a',
                   nodeBorder: '#94a3b8'
                 } : {
                   fontFamily: 'var(--font-family)',
@@ -2505,6 +2550,8 @@ export class MarkdownPreviewWebviewPanel {
                   clusterBkg: 'rgba(30, 41, 59, 0.45)',
                   clusterBorder: '#475569',
                   edgeLabelBackground: 'transparent',
+                  edgeLabelColor: '#e2e8f0',
+                  textColor: '#e2e8f0',
                   nodeBorder: '#475569'
                 }
               });

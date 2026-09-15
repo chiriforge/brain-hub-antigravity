@@ -2232,14 +2232,22 @@ export class MarkdownPreviewWebviewPanel {
 
               let processed = line;
 
-              // 1. Sanitize Edge Labels: |label| -> replace < with &lt;, > with &gt;, & with &amp;
+              // 1. Sanitize Edge Labels: |label| -> preserve/ensure double quotes for Mermaid.js string labels
               processed = processed.replace(/\\|([^\\|\\r\\n]+)\\|/g, (match, label) => {
-                const clean = label
+                const trimmedLabel = label.trim();
+                const isDoubleQuoted = trimmedLabel.startsWith('"') && trimmedLabel.endsWith('"');
+                let innerText = isDoubleQuoted ? trimmedLabel.slice(1, -1) : trimmedLabel;
+
+                innerText = innerText
                   .replace(/"/g, "'")
                   .replace(/&(?!(amp|lt|gt|quot|apos);)/g, '&amp;')
                   .replace(/</g, '&lt;')
                   .replace(/>/g, '&gt;');
-                return '|' + clean + '|';
+
+                if (isDoubleQuoted || /[ :()\\-<>&/\\?]/.test(innerText)) {
+                  return '|"' + innerText + '"|';
+                }
+                return '|' + innerText + '|';
               });
 
               // 1b. Normalize unsupported bidirectional arrows: NodeA <--> NodeB -> NodeA --> NodeB and NodeB --> NodeA

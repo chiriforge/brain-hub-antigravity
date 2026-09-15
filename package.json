@@ -496,7 +496,8 @@
     "build": "node esbuild.js",
     "package": "npx @vscode/vsce package --no-dependencies",
     "release": "node scripts/release.js",
-    "sync:chiriforge": "node scripts/sync-chiriforge.js"
+    "sync:chiriforge": "node scripts/sync-chiriforge.js",
+    "publish:openvsx": "node scripts/publish-ovsx.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -1300,16 +1300,48 @@ export class MarkdownPreviewWebviewPanel {
           }
 
           .mermaid-body svg .node foreignObject > div {
-            padding: 4px 8px !important;
-            line-height: 1.4 !important;
-            box-sizing: border-box;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+            text-align: center !important;
+            padding: 6px 14px !important;
+            line-height: 1.45 !important;
+            box-sizing: border-box !important;
+            word-break: break-word;
+          }
+
+          /* Modern Floating Pill Edge Label (Option A) */
+          .mermaid-body svg .edgeLabel {
+            font-size: 11.5px !important;
+            font-family: var(--font-family) !important;
+            background-color: transparent !important;
           }
 
           .mermaid-body svg .edgeLabel foreignObject > div {
-            padding: 2px 6px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: 3px 8px !important;
             line-height: 1.3 !important;
-            border-radius: 4px;
-            box-sizing: border-box;
+            font-size: 11.5px !important;
+            font-weight: 500 !important;
+            border-radius: 4px !important;
+            background: var(--vscode-editorWidget-background, var(--code-bg, #1e1e1e)) !important;
+            color: var(--vscode-editorWidget-foreground, var(--text-primary, #cccccc)) !important;
+            border: 1px solid var(--vscode-editorWidget-border, var(--border-color, rgba(128, 128, 128, 0.35))) !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+            box-sizing: border-box !important;
+            white-space: nowrap !important;
+          }
+
+          /* Fallback for SVG native text edge labels if foreignObject is not used */
+          .mermaid-body svg .edgeLabel rect {
+            rx: 4px !important;
+            ry: 4px !important;
+            fill: var(--vscode-editorWidget-background, var(--code-bg, #1e1e1e)) !important;
+            stroke: var(--vscode-editorWidget-border, var(--border-color, rgba(128, 128, 128, 0.35))) !important;
+            stroke-width: 1px !important;
           }
 
           .mermaid-body svg .cluster rect {
@@ -2444,7 +2476,7 @@ export class MarkdownPreviewWebviewPanel {
                   curve: 'basis',
                   nodeSpacing: 50,
                   rankSpacing: 55,
-                  padding: 20,
+                  padding: 24,
                   subGraphTitleMargin: {
                     top: 16,
                     bottom: 16
@@ -2460,7 +2492,7 @@ export class MarkdownPreviewWebviewPanel {
                   tertiaryColor: '#ffffff',
                   clusterBkg: 'rgba(241, 245, 249, 0.65)',
                   clusterBorder: '#cbd5e1',
-                  edgeLabelBackground: 'rgba(255, 255, 255, 0.95)',
+                  edgeLabelBackground: 'transparent',
                   nodeBorder: '#94a3b8'
                 } : {
                   fontFamily: 'var(--font-family)',
@@ -2472,7 +2504,7 @@ export class MarkdownPreviewWebviewPanel {
                   tertiaryColor: '#1e293b',
                   clusterBkg: 'rgba(30, 41, 59, 0.45)',
                   clusterBorder: '#475569',
-                  edgeLabelBackground: 'rgba(15, 23, 42, 0.95)',
+                  edgeLabelBackground: 'transparent',
                   nodeBorder: '#475569'
                 }
               });

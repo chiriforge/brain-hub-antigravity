@@ -1,22 +1,22 @@
 # Agent Guidelines & Rules
 
-## 1. Documentation Standards (Nguyên Tắc Viết Tài Liệu)
+## 1. Documentation Standards
 
-- **Không dùng ngôn ngữ marketing hoặc nói quá (No Marketing / Hyperbolic Language)**:
-  - Tuyệt đối không dùng các từ ngữ phóng đại, sáo rỗng hoặc quảng cáo như: "chuyên nghiệp", "hoàn hảo", "tuyệt vời", "mượt mà", "vượt trội", "đỉnh cao", "state-of-the-art", "game-changing", "blazing fast", "seamless", "zero-latency", "cực kỳ mạnh mẽ"...
-- **Tập trung vào bản chất và sự thật (Focus on Essence & Technical Reality)**:
-  - Diễn đạt chính xác cơ chế hoạt động, luồng xử lý dữ liệu, tham số đầu vào/đầu ra, cấu hình và giới hạn thực tế của hệ thống.
-  - Trình bày trực diện, súc tích, văn phong kỹ thuật (engineering tone), khách quan và trung thực.
-  - Ví dụ:
-    - ❌ Không viết: *"Giao diện Master-Detail chuyên nghiệp, tải tức thì với tốc độ cực đỉnh không giật lag."*
-    - ✅ Viết: *"Giao diện chia 2 cột: danh sách phiên bên trái và nội dung chat bên phải; hiển thị trước từ cache cục bộ và nạp chi tiết bất đồng bộ."*
+- **No Marketing / Hyperbolic Language**:
+  - Strictly avoid exaggerated, empty, or promotional buzzwords such as: "professional", "perfect", "amazing", "smooth", "superior", "cutting-edge", "state-of-the-art", "game-changing", "blazing fast", "seamless", "zero-latency", "extremely powerful"...
+- **Focus on Essence & Technical Reality**:
+  - Precisely describe operating mechanisms, data processing flows, input/output parameters, configurations, and actual system limitations.
+  - Present information directly, concisely, using an objective, technical engineering tone.
+  - Examples:
+    - ❌ Do not write: *"Professional Master-Detail interface, loading instantly with blazing fast speed and zero lag."*
+    - ✅ Write: *"Two-column interface: session list on the left and chat content on the right; pre-rendered from local cache with asynchronous detailed loading."*
 
 ## 2. Git Operations Policy
-- Chỉ thực hiện `git push` khi người dùng yêu cầu rõ ràng bằng văn bản trong câu lệnh.
-- Tự động tạo commit cục bộ rõ ràng, nguyên tử (`atomic commit`) khi hoàn thành tính năng hoặc sửa lỗi.
+- Only execute `git push` when the user explicitly requests it in writing in the prompt.
+- Automatically create clear, atomic local commits upon completing features or bug fixes.
 
 ## 3. Mermaid Diagram Syntax Standards
-- Luôn đặt nhãn cạnh có chứa ký tự đặc biệt hoặc dấu ngoặc trong dấu nháy kép: `-->|"nhãn"|`.
-- Luôn đặt tên hiển thị của Subgraph trong dấu ngoặc vuông kèm nháy kép: `subgraph ID ["Tên"]`.
-- Luôn đặt nhãn Node có ký tự điều khiển (`:`, `&`, `->`, `/`, v.v.) trong dấu nháy kép: `Node["Nội dung"]`.
-- Sử dụng khoảng trắng chuẩn ASCII, không dùng tab hay ký tự khoảng trắng đặc biệt.
+- Always enclose edge labels containing special characters or parentheses in double quotes: `-->|"label"|`.
+- Always enclose Subgraph display names in brackets with double quotes: `subgraph ID ["Title"]`.
+- Always enclose Node labels containing control characters (`:`, `&`, `->`, `/`, etc.) in double quotes: `Node["Content"]`.
+- Use standard ASCII whitespace; do not use tabs or non-standard whitespace characters.

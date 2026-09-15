@@ -1869,8 +1869,9 @@ export class ChatWebviewPanel {
             align-items: center !important;
             justify-content: center !important;
             text-align: center !important;
-            padding: 6px 14px !important;
-            line-height: 1.45 !important;
+            height: 100% !important;
+            padding: 0 10px !important;
+            line-height: 1.35 !important;
             box-sizing: border-box !important;
             word-break: break-word;
           }

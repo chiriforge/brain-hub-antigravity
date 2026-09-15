@@ -2,7 +2,7 @@
   "name": "brain-hub-antigravity",
   "displayName": "Brain Hub for Antigravity",
   "description": "Search, view, resume, and sync Antigravity Brain sessions across machines.",
-  "version": "0.5.1-build-0014",
+  "version": "0.5.2",
   "publisher": "chiriforge",
   "license": "MIT",
   "repository": {

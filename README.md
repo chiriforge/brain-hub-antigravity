@@ -33,6 +33,13 @@ An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, 
 
 ---
 
+## What's New in v0.5.2
+- **Session Artifacts Gallery**: Album grid viewer with lightbox and asset export.
+- **Mermaid Rendering**: Fixed dark theme contrast and label alignment.
+- **Webview Selection**: Enabled text selection and right-click copy.
+
+---
+
 ## Features
 
 ### 1. Brain Hub Dashboard (`Ctrl + K Ctrl + D`)

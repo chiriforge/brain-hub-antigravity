@@ -33,6 +33,13 @@ Tiện ích mở rộng cho VS Code và Google DeepMind Antigravity IDE dùng đ
 
 ---
 
+## Điểm Mới trong v0.5.2
+- **Session Artifacts Gallery**: Trình xem lưới album với lightbox và xuất tài liệu sang `.docs/assets/`.
+- **Mermaid Rendering**: Khắc phục độ tương phản màu chữ theme tối và căn chỉnh nhãn.
+- **Webview Selection**: Hỗ trợ bôi đen chọn văn bản và menu chuột phải sao chép.
+
+---
+
 ## Tính Năng
 
 ### 1. Bảng Điều Khiển Brain Hub Dashboard (`Ctrl + K Ctrl + D`)

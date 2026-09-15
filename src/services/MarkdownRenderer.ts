@@ -131,7 +131,8 @@ export class MarkdownRenderer {
 
     if (cleanHref.startsWith('data:image/') || /^https?:\/\//i.test(cleanHref)) {
       const titleAttr = title ? ` title="${MarkdownRenderer.escapeHtml(title)}"` : '';
-      return `<div class="chat-image-container"><img src="${cleanHref}" alt="${MarkdownRenderer.escapeHtml(text || '')}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${titleAttr} />${captionHtml}</div>`;
+      const dataSrcAttr = ` data-image-src="${cleanHref.startsWith('data:image/') ? 'data:image' : MarkdownRenderer.escapeHtml(cleanHref)}"`;
+      return `<div class="chat-image-container"><img src="${cleanHref}" alt="${MarkdownRenderer.escapeHtml(text || '')}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${dataSrcAttr}${titleAttr} />${captionHtml}</div>`;
     }
 
     const resolved = MarkdownRenderer.resolveLocalImagePath(cleanHref, sessionPath);
@@ -140,7 +141,8 @@ export class MarkdownRenderer {
       if (dataUri) {
         const hoverTitle = title || text || path.basename(resolved);
         const titleAttr = ` title="${MarkdownRenderer.escapeHtml(hoverTitle)}"`;
-        return `<div class="chat-image-container"><img src="${dataUri}" alt="${MarkdownRenderer.escapeHtml(text || '')}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${titleAttr} />${captionHtml}</div>`;
+        const dataSrcAttr = ` data-image-src="${encodeURIComponent(cleanHref)}" data-original-path="${encodeURIComponent(resolved)}"`;
+        return `<div class="chat-image-container"><img src="${dataUri}" alt="${MarkdownRenderer.escapeHtml(text || '')}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${dataSrcAttr}${titleAttr} />${captionHtml}</div>`;
       }
     }
 
@@ -349,7 +351,8 @@ export class MarkdownRenderer {
               const hoverTitle = displayPath;
               const titleAttr = ` title="${MarkdownRenderer.escapeHtml(hoverTitle)}"`;
               const encodedPath = encodeURIComponent(cleanHref);
-              const fileDataAttr = ` data-file-url="${encodedPath}" data-filepath="${encodedPath}"`;
+              const decodedPathAttr = ` data-decoded-path="${MarkdownRenderer.escapeHtml(displayPath)}"`;
+              const fileDataAttr = ` data-file-url="${encodedPath}" data-filepath="${encodedPath}"${decodedPathAttr}`;
               const isMd = MarkdownRenderer.isMarkdownPath(displayPath);
 
               if (isMd) {
@@ -360,7 +363,8 @@ export class MarkdownRenderer {
             } else {
               const hoverTitle = title || cleanHref;
               const titleAttr = hoverTitle ? ` title="${MarkdownRenderer.escapeHtml(hoverTitle)}"` : '';
-              return `<a href="${cleanHref}"${titleAttr} target="_blank" rel="noopener noreferrer" class="markdown-link">${text}</a>`;
+              const decodedPathAttr = ` data-decoded-path="${MarkdownRenderer.escapeHtml(cleanHref)}"`;
+              return `<a href="${cleanHref}"${titleAttr}${decodedPathAttr} target="_blank" rel="noopener noreferrer" class="markdown-link">${text}</a>`;
             }
           }
         }
@@ -537,13 +541,15 @@ export class MarkdownRenderer {
           return match;
         }
         if (src.startsWith('data:image/') || /^https?:\/\//i.test(src)) {
-          return `<div class="chat-image-container"><img ${before}src="${src}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${after}></div>`;
+          const dataSrcAttr = ` data-image-src="${src.startsWith('data:image/') ? 'data:image' : MarkdownRenderer.escapeHtml(src)}"`;
+          return `<div class="chat-image-container"><img ${before}src="${src}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${dataSrcAttr}${after}></div>`;
         }
         const resolved = MarkdownRenderer.resolveLocalImagePath(src, sessionPath || MarkdownRenderer.currentSessionPath);
         if (resolved) {
           const dataUri = MarkdownRenderer.fileToDataUri(resolved);
           if (dataUri) {
-            return `<div class="chat-image-container"><img ${before}src="${dataUri}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${after}></div>`;
+            const dataSrcAttr = ` data-image-src="${encodeURIComponent(src)}" data-original-path="${encodeURIComponent(resolved)}"`;
+            return `<div class="chat-image-container"><img ${before}src="${dataUri}" class="chat-rendered-img" onclick="openMediaModal(this.src)" loading="lazy"${dataSrcAttr}${after}></div>`;
           }
         }
         const filename = path.basename(src) || src;

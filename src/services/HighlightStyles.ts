@@ -520,5 +520,394 @@ body.vscode-light .markdown-link.file-link:hover {
   background: rgba(188, 140, 255, 0.28) !important;
   border-color: #b180d7 !important;
 }
+
+/* High-contrast Text Selection Styling mapped to VS Code Editor Selection */
+::selection {
+  background-color: var(--vscode-editor-selectionBackground, rgba(0, 122, 204, 0.45)) !important;
+  color: inherit !important;
+}
+
+::-moz-selection {
+  background-color: var(--vscode-editor-selectionBackground, rgba(0, 122, 204, 0.45)) !important;
+  color: inherit !important;
+}
+
+/* Prevent native element drag ghost from interfering with text selection */
+a, img, .chat-rendered-img, .user-media-thumb, .user-media-item, .markdown-link, .file-link {
+  -webkit-user-drag: none !important;
+  user-drag: none !important;
+}
+
+/* Reusable Toast Notification Component */
+.webview-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--vscode-editorWidget-background, #252526);
+  color: var(--vscode-editorWidget-foreground, #cccccc);
+  border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+  padding: 8px 16px;
+  border-radius: var(--radius-md, 6px);
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  z-index: 2000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.webview-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+.webview-toast-icon {
+  color: var(--accent-green, #388a34);
+  font-weight: bold;
+}
+
+/* Artifacts Modal Styles */
+.artifacts-modal-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 24px;
+}
+
+.artifacts-modal-overlay.active {
+  display: flex;
+}
+
+.artifacts-modal-container {
+  background: var(--vscode-editor-background, #1e1e1e);
+  border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.15));
+  border-radius: 8px;
+  width: calc(100% - 48px);
+  max-width: 1080px;
+  height: calc(100% - 48px);
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: artifactsModalZoomIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes artifactsModalZoomIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.artifacts-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.1));
+}
+
+.artifacts-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground, #ccc);
+}
+
+.artifacts-modal-count {
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+.artifacts-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.artifacts-header-btn {
+  background: transparent;
+  border: 1px solid var(--vscode-button-secondaryBorder, rgba(255, 255, 255, 0.2));
+  color: var(--vscode-foreground, #ccc);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.artifacts-header-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: #fff;
+}
+
+.artifacts-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--vscode-foreground, #ccc);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.artifacts-close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.artifacts-modal-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 18px;
+  background: var(--vscode-editorGroupHeader-tabsBackground, #1f1f1f);
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
+}
+
+.artifacts-tab {
+  background: transparent;
+  border: none;
+  color: var(--vscode-descriptionForeground, #888);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.artifacts-tab:hover {
+  color: var(--vscode-foreground, #ccc);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.artifacts-tab.active {
+  color: #fff;
+  background: var(--vscode-button-background, #0e639c);
+  font-weight: 600;
+}
+
+.artifacts-tab .tab-badge {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+
+.artifacts-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-auto-rows: max-content;
+  gap: 16px;
+  align-content: start;
+}
+
+.artifacts-empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--vscode-descriptionForeground, #888);
+  font-size: 13px;
+}
+
+/* Artifact Card Styling */
+.artifact-card {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.artifact-card-preview {
+  height: 200px;
+  min-height: 200px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.artifact-card:hover .artifact-card-preview {
+  border-color: var(--vscode-focusBorder, #007acc);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.artifact-card-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.2s ease;
+}
+
+.artifact-card-preview:hover .artifact-card-img {
+  transform: scale(1.04);
+}
+
+.artifact-card-icon-preview {
+  font-size: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.artifact-card-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  backdrop-filter: blur(2px);
+  text-transform: uppercase;
+  z-index: 5;
+}
+
+.artifact-card-badge.ai {
+  background: rgba(147, 51, 234, 0.85);
+}
+
+.artifact-card-badge.user {
+  background: rgba(14, 165, 233, 0.85);
+}
+
+.artifact-card-badge.plan {
+  background: rgba(16, 185, 129, 0.85);
+}
+
+.artifact-card-badge.scratch {
+  background: rgba(245, 158, 11, 0.85);
+}
+
+.artifact-card-info {
+  padding: 8px 4px 4px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 42px;
+  box-sizing: border-box;
+}
+
+.artifact-card-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vscode-foreground, #ccc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.artifact-card-meta {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  line-height: 1.2;
+}
+
+.artifact-card-prompt {
+  display: none;
+}
+
+/* Hover action overlay on thumbnail */
+.artifact-card-hover-actions {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(transparent 45%, rgba(0, 0, 0, 0.78) 100%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 8px;
+  z-index: 6;
+}
+
+.artifact-card-preview:hover .artifact-card-hover-actions {
+  opacity: 1;
+}
+
+.artifact-btn-overlay {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: background 0.12s ease;
+  white-space: nowrap;
+}
+
+.artifact-btn-overlay:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* Primary all-artifacts button on header */
+.primary-artifact-btn {
+  background: var(--vscode-button-secondaryBackground, #3a3d41) !important;
+  color: var(--vscode-button-secondaryForeground, #ffffff) !important;
+  border: 1px solid var(--vscode-button-secondaryBorder, rgba(255, 255, 255, 0.2)) !important;
+  font-weight: 600 !important;
+}
+
+.primary-artifact-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e) !important;
+  border-color: var(--vscode-focusBorder, #007acc) !important;
+}
 `;
 

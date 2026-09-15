@@ -35,6 +35,100 @@ const { DashboardWebviewPanel } = require('../out/views/DashboardWebviewPanel');
 const { ChatWebviewPanel } = require('../out/views/ChatWebviewPanel');
 const { MarkdownPreviewWebviewPanel } = require('../out/views/MarkdownPreviewWebviewPanel');
 
+function createMockDom() {
+  const listeners = { window: {}, document: {} };
+  const mockElement = () => ({
+    style: {},
+    classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+    setAttribute: () => {},
+    getAttribute: () => '',
+    removeAttribute: () => {},
+    appendChild: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    scrollIntoView: () => {},
+    scrollTo: () => {},
+    scrollTop: 0,
+    scrollHeight: 100,
+    clientHeight: 100,
+    value: '',
+    innerText: '',
+    innerHTML: '',
+    focus: () => {},
+    select: () => {}
+  });
+
+  const dom = {
+    console: {
+      log: () => {},
+      warn: () => {},
+      error: () => {}
+    },
+    setTimeout: (fn, ms) => {},
+    clearTimeout: () => {},
+    setInterval: () => {},
+    clearInterval: () => {},
+    encodeURIComponent,
+    decodeURIComponent,
+    encodeURI,
+    decodeURI,
+    JSON,
+    Math,
+    Set,
+    Map,
+    Array,
+    Object,
+    String,
+    Number,
+    Boolean,
+    RegExp,
+    Date,
+    acquireVsCodeApi: () => ({ postMessage: () => {}, getState: () => ({}), setState: () => {} }),
+    window: {
+      addEventListener: (type, fn) => {
+        listeners.window[type] = listeners.window[type] || [];
+        listeners.window[type].push(fn);
+      },
+      removeEventListener: () => {},
+      innerWidth: 1024,
+      innerHeight: 768,
+      scrollTo: () => {},
+      getSelection: () => ({ isCollapsed: true, toString: () => '' })
+    },
+    document: {
+      addEventListener: (type, fn) => {
+        listeners.document[type] = listeners.document[type] || [];
+        listeners.document[type].push(fn);
+      },
+      removeEventListener: () => {},
+      getElementById: (id) => mockElement(),
+      querySelector: (sel) => mockElement(),
+      querySelectorAll: (sel) => [],
+      createElement: (tag) => mockElement(),
+      body: mockElement()
+    },
+    navigator: {
+      clipboard: {
+        writeText: async () => {},
+        write: async () => {}
+      }
+    },
+    IntersectionObserver: class {
+      observe() {}
+      disconnect() {}
+    },
+    Image: class {
+      constructor() { this.width = 100; this.height = 100; }
+    }
+  };
+  dom.window.document = dom.document;
+  dom.window.navigator = dom.navigator;
+  dom.window.window = dom.window;
+  return { context: vm.createContext(dom), listeners };
+}
+
 function assertScriptsValid(html, panelName) {
   const scriptRegex = /<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
   let match;
@@ -44,9 +138,25 @@ function assertScriptsValid(html, panelName) {
     if (!scriptContent.trim()) continue;
     scriptIndex++;
     try {
-      new vm.Script(scriptContent);
+      const script = new vm.Script(scriptContent);
+      const { context, listeners } = createMockDom();
+      script.runInContext(context);
+
+      if (listeners.document['DOMContentLoaded']) {
+        listeners.document['DOMContentLoaded'].forEach(fn => fn());
+      }
+      if (listeners.window['message']) {
+        listeners.window['message'].forEach(fn => fn({
+          data: {
+            command: 'updateReader',
+            sessionId: 'test-session',
+            chatHtml: '<div id="chatTimeline"><div>Message</div></div>'
+          }
+        }));
+      }
     } catch (e) {
-      assert.fail(`Syntax error in ${panelName} script #${scriptIndex}: ${e.message}`);
+      console.error(e);
+      assert.fail(`Error in ${panelName} script #${scriptIndex}: ${e.stack || e.message}`);
     }
   }
   assert(scriptIndex > 0, `No scripts found in ${panelName}`);

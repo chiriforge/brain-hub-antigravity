@@ -128,6 +128,14 @@ export class MarkdownPreviewWebviewPanel {
           case 'exportPdf':
             await this.handleExportPdf(message.htmlContent);
             return;
+
+          case 'saveImageAs':
+            await this.handleSaveImageAs(message.imageSrc);
+            return;
+
+          case 'openImageExternal':
+            await this.handleOpenImageExternal(message.imageSrc);
+            return;
         }
       },
       null,
@@ -163,6 +171,91 @@ export class MarkdownPreviewWebviewPanel {
         }
       });
     } catch {}
+  }
+
+  private async handleSaveImageAs(rawSrc?: string): Promise<void> {
+    if (!rawSrc) return;
+    try {
+      let defaultName = 'image_' + Date.now() + '.png';
+      let buffer: Buffer | null = null;
+
+      if (rawSrc.startsWith('data:image/')) {
+        const matches = rawSrc.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+        if (matches) {
+          const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+          defaultName = `image_${Date.now()}.${ext}`;
+          buffer = Buffer.from(matches[2], 'base64');
+        }
+      } else if (rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        try {
+          const urlObj = new URL(rawSrc);
+          const base = path.basename(urlObj.pathname);
+          if (base && base.includes('.')) defaultName = base;
+        } catch {}
+      } else {
+        let localPath = rawSrc;
+        if (localPath.startsWith('file:///')) {
+          localPath = vscode.Uri.parse(localPath).fsPath;
+        } else if (localPath.startsWith('vscode-webview-resource:') || localPath.startsWith('vscode-resource:')) {
+          const parsed = vscode.Uri.parse(localPath);
+          localPath = parsed.fsPath;
+        }
+        if (fs.existsSync(localPath)) {
+          defaultName = path.basename(localPath);
+          buffer = await fs.promises.readFile(localPath);
+        }
+      }
+
+      const defaultDir = path.dirname(this.filePath);
+      const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(defaultDir, defaultName)),
+        filters: {
+          'Images': ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'],
+          'All Files': ['*']
+        }
+      });
+
+      if (!saveUri) return;
+
+      if (buffer) {
+        await fs.promises.writeFile(saveUri.fsPath, buffer);
+      } else if (rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        const res = await fetch(rawSrc);
+        const arrayBuf = await res.arrayBuffer();
+        await fs.promises.writeFile(saveUri.fsPath, Buffer.from(arrayBuf));
+      } else {
+        let srcPath = rawSrc;
+        if (srcPath.startsWith('file:///')) {
+          srcPath = vscode.Uri.parse(srcPath).fsPath;
+        }
+        if (fs.existsSync(srcPath)) {
+          await fs.promises.copyFile(srcPath, saveUri.fsPath);
+        }
+      }
+
+      vscode.window.showInformationMessage(`Image saved to ${saveUri.fsPath}`);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Failed to save image: ${err?.message || err}`);
+    }
+  }
+
+  private async handleOpenImageExternal(rawSrc?: string): Promise<void> {
+    if (!rawSrc) return;
+    try {
+      let targetUri: vscode.Uri;
+      if (rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        targetUri = vscode.Uri.parse(rawSrc);
+      } else {
+        let localPath = rawSrc;
+        if (localPath.startsWith('file:///')) {
+          localPath = vscode.Uri.parse(localPath).fsPath;
+        }
+        targetUri = vscode.Uri.file(localPath);
+      }
+      await vscode.env.openExternal(targetUri);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Could not open image externally: ${err?.message || err}`);
+    }
   }
 
   private async handleOpenFile(rawPath?: string, openMode?: 'rich' | 'ide'): Promise<void> {
@@ -1408,6 +1501,193 @@ export class MarkdownPreviewWebviewPanel {
             font-family: var(--font-mono);
             font-size: 10px;
           }
+
+          /* Fullscreen Image Lightbox Modal */
+          .media-modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(6px);
+            z-index: 20000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            cursor: zoom-out;
+          }
+
+          .media-modal-overlay.visible {
+            display: flex;
+          }
+
+          .media-modal-content {
+            position: relative;
+            max-width: 95vw;
+            max-height: 95vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+
+          .media-modal-img {
+            max-width: 92vw;
+            max-height: 90vh;
+            object-fit: contain;
+            border-radius: var(--radius-md);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            cursor: default;
+          }
+
+          .media-modal-close-btn {
+            position: absolute;
+            top: -14px;
+            right: -14px;
+            background: var(--bg-secondary, #252526);
+            color: var(--text-primary, #ffffff);
+            border: 1px solid var(--border-color);
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            transition: background 0.15s, transform 0.15s;
+          }
+
+          .media-modal-close-btn:hover {
+            background: var(--accent-red, #e51400);
+            color: #ffffff;
+            transform: scale(1.1);
+          }
+
+          /* Media Modal Floating Toolbar */
+          .media-modal-toolbar {
+            position: absolute;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--vscode-editorWidget-background, #252526);
+            border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+            border-radius: 8px;
+            padding: 5px 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+            z-index: 1010;
+          }
+
+          .media-toolbar-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.08));
+            color: var(--vscode-button-secondaryForeground, #cccccc);
+            border: 1px solid var(--border-color, transparent);
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11.5px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+          }
+
+          .media-toolbar-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground, rgba(255, 255, 255, 0.16));
+            color: #ffffff;
+          }
+
+          .media-toolbar-close {
+            background: transparent;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 4px 8px;
+          }
+
+          .media-toolbar-close:hover {
+            background: var(--vscode-errorForeground, #f14c4c);
+            color: #ffffff;
+          }
+
+          .media-modal-content.zoomed {
+            overflow: auto;
+            max-width: 96vw;
+            max-height: 86vh;
+            display: block;
+            cursor: grab;
+          }
+
+          .media-modal-content.zoomed .media-modal-img {
+            max-width: none;
+            max-height: none;
+            display: block;
+            margin: auto;
+          }
+
+          /* Custom In-Webview Context Menu */
+          .custom-context-menu {
+            position: fixed;
+            z-index: 10000;
+            background: var(--vscode-menu-background, #252526);
+            color: var(--vscode-menu-foreground, #cccccc);
+            border: 1px solid var(--vscode-menu-border, rgba(128, 128, 128, 0.35));
+            border-radius: 5px;
+            box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+            padding: 4px 0;
+            min-width: 180px;
+            max-width: 320px;
+            font-family: var(--font-family);
+            font-size: 12px;
+            user-select: none;
+            -webkit-user-select: none;
+          }
+
+          .context-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+            color: var(--vscode-menu-foreground, #cccccc);
+            transition: background 0.05s ease, color 0.05s ease;
+          }
+
+          .context-menu-item:hover, .context-menu-item:focus {
+            background: var(--vscode-menu-selectionBackground, #094771);
+            color: var(--vscode-menu-selectionForeground, #ffffff);
+            outline: none;
+          }
+
+          .context-menu-item .menu-icon {
+            font-size: 13px;
+            width: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.85;
+          }
+
+          .context-menu-item:hover .menu-icon {
+            opacity: 1;
+          }
+
+          .context-menu-item .menu-label {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .context-menu-separator {
+            height: 1px;
+            background: var(--vscode-menu-separatorBackground, var(--border-color));
+            margin: 4px 0;
+          }
         </style>
       </head>
       <body data-workspace-path="${MarkdownRenderer.escapeHtml(fileDir)}">
@@ -1477,6 +1757,43 @@ export class MarkdownPreviewWebviewPanel {
           </div>
         </div>
 
+        <!-- Fullscreen Media Lightbox Modal -->
+        <div class="media-modal-overlay" id="mediaModal" onclick="if(event.target === this) closeMediaModal()">
+          <div class="media-modal-toolbar">
+            <button class="media-toolbar-btn" id="btnModalCopyImg" onclick="copyModalImage()" title="Copy binary image (PNG) to clipboard">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>
+              <span>Copy Image</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalCopyPath" onclick="copyModalImagePath()" title="Copy image path / URL">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg>
+              <span>Copy Path</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalSaveAs" onclick="saveModalImage()" title="Save image to disk">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"></path><path d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"></path></svg>
+              <span>Save As...</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalOpenExt" onclick="openModalImageExternal()" title="Open in default system viewer">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.75.75a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V3.56l-5.22 5.22a.749.749 0 0 1-1.06-1.06l5.22-5.22H11.25a.75.75 0 0 1-.75-.75Z"></path></svg>
+              <span>Open in System</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalZoom" onclick="toggleModalZoom()" title="Toggle actual size (100%) vs fit screen">
+              <span id="modalZoomIcon">🔍</span>
+              <span id="modalZoomLabel">Actual Size</span>
+            </button>
+            <button class="media-toolbar-btn media-toolbar-close" onclick="closeMediaModal()" title="Close full view (Esc)">
+              ✕
+            </button>
+          </div>
+          <div class="media-modal-content" id="mediaModalContent">
+            <img id="mediaModalImg" class="media-modal-img" src="" alt="Enlarged Image / Attachment">
+          </div>
+        </div>
+
+        <!-- Custom In-Webview Context Menu -->
+        <div id="customContextMenu" class="custom-context-menu" style="display:none;" role="menu">
+          <div class="context-menu-list" id="customContextMenuList"></div>
+        </div>
+
         <script>
           const vscode = acquireVsCodeApi();
           const rawDocContent = ${JSON.stringify(rawMarkdown)};
@@ -1502,6 +1819,374 @@ export class MarkdownPreviewWebviewPanel {
           window.addEventListener('scroll', () => {
             sessionStorage.setItem(currentDocKey, window.scrollY);
           });
+
+          function showToast(message, type = 'info', duration = 2500) {
+            let toast = document.getElementById('webviewToast');
+            if (!toast) {
+              toast = document.createElement('div');
+              toast.id = 'webviewToast';
+              toast.className = 'webview-toast';
+              document.body.appendChild(toast);
+            }
+            toast.textContent = message;
+            toast.className = 'webview-toast visible ' + type;
+            if (window._toastTimeout) clearTimeout(window._toastTimeout);
+            window._toastTimeout = setTimeout(() => {
+              toast.classList.remove('visible');
+            }, duration);
+          }
+
+          async function copyImageToClipboard(src) {
+            try {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = src;
+              });
+
+              const canvas = document.createElement('canvas');
+              canvas.width = img.naturalWidth || img.width;
+              canvas.height = img.naturalHeight || img.height;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) throw new Error('Canvas context unavailable');
+              ctx.drawImage(img, 0, 0);
+
+              const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+              if (!blob) throw new Error('Blob conversion failed');
+
+              if (navigator.clipboard && navigator.clipboard.write) {
+                await navigator.clipboard.write([
+                  new ClipboardItem({ 'image/png': blob })
+                ]);
+                showToast('Image copied to clipboard (PNG)!', 'success');
+                return true;
+              }
+            } catch (err) {
+              console.warn('Direct binary image copy failed, copying path:', err);
+            }
+
+            copyLinkPath(src, 'Image path');
+          }
+
+          function copyLinkPath(path, label = 'Path') {
+            if (!path) return;
+            navigator.clipboard.writeText(path).then(() => {
+              showToast(label + ' copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: path });
+              showToast(label + ' copied to clipboard!', 'info');
+            });
+          }
+
+          function copyLinkText(text) {
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+              showToast('Link text copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: text });
+              showToast('Link text copied to clipboard!', 'info');
+            });
+          }
+
+          function copySelectionText(text) {
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+              showToast('Copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: text });
+              showToast('Copied to clipboard!', 'info');
+            });
+          }
+
+          function copyCodeBlock(code) {
+            if (!code) return;
+            navigator.clipboard.writeText(code).then(() => {
+              showToast('Code block copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: code });
+              showToast('Code block copied to clipboard!', 'info');
+            });
+          }
+
+          function showContextMenu(e, items) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const menu = document.getElementById('customContextMenu');
+            const list = document.getElementById('customContextMenuList');
+            if (!menu || !list) return;
+
+            list.innerHTML = '';
+            items.forEach(item => {
+              if (item.separator) {
+                const sep = document.createElement('div');
+                sep.className = 'context-menu-separator';
+                list.appendChild(sep);
+                return;
+              }
+              const itemEl = document.createElement('div');
+              itemEl.className = 'context-menu-item';
+              itemEl.setAttribute('role', 'menuitem');
+              itemEl.tabIndex = 0;
+              itemEl.innerHTML = '<span class="menu-icon">' + item.icon + '</span><span class="menu-label">' + item.label + '</span>';
+              itemEl.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                closeContextMenu();
+                item.action();
+              });
+              list.appendChild(itemEl);
+            });
+
+            menu.style.display = 'block';
+
+            const menuWidth = 220;
+            const menuHeight = items.length * 28 + 16;
+            let posX = e.clientX;
+            let posY = e.clientY;
+
+            if (posX + menuWidth > window.innerWidth) {
+              posX = Math.max(10, window.innerWidth - menuWidth - 10);
+            }
+            if (posY + menuHeight > window.innerHeight) {
+              posY = Math.max(10, window.innerHeight - menuHeight - 10);
+            }
+
+            menu.style.left = posX + 'px';
+            menu.style.top = posY + 'px';
+          }
+
+          function closeContextMenu() {
+            const menu = document.getElementById('customContextMenu');
+            if (menu) {
+              menu.style.display = 'none';
+            }
+          }
+
+          document.addEventListener('contextmenu', (e) => {
+            const selection = window.getSelection();
+            const selectedText = (selection && !selection.isCollapsed) ? selection.toString().trim() : '';
+
+            const linkEl = e.target.closest('a');
+            const imgEl = e.target.closest('img, .chat-rendered-img');
+            const codeEl = e.target.closest('.code-container, pre, code');
+
+            const items = [];
+
+            if (imgEl) {
+              const rawSrc = imgEl.getAttribute('data-image-src') || imgEl.getAttribute('src') || '';
+              const cleanPath = imgEl.getAttribute('data-original-path') || imgEl.getAttribute('data-decoded-path') || rawSrc;
+
+              items.push({
+                icon: '🖼️',
+                label: 'Copy Image',
+                action: () => copyImageToClipboard(rawSrc)
+              });
+              items.push({
+                icon: '📋',
+                label: 'Copy Image Path / URL',
+                action: () => copyLinkPath(cleanPath, 'Image path')
+              });
+              items.push({
+                icon: '💾',
+                label: 'Save Image As...',
+                action: () => vscode.postMessage({ command: 'saveImageAs', imageSrc: rawSrc })
+              });
+              items.push({
+                icon: '↗️',
+                label: 'Open in System',
+                action: () => vscode.postMessage({ command: 'openImageExternal', imageSrc: rawSrc })
+              });
+
+              const isInsideModal = !!imgEl.closest('#mediaModal');
+              if (!isInsideModal) {
+                items.push({ separator: true });
+                items.push({
+                  icon: '🔍',
+                  label: 'Enlarge Image',
+                  action: () => openMediaModal(rawSrc)
+                });
+              }
+
+              showContextMenu(e, items);
+              return;
+            }
+
+            if (linkEl) {
+              let linkPath = linkEl.getAttribute('data-decoded-path') || '';
+              if (!linkPath) {
+                const href = linkEl.getAttribute('href') || '';
+                if (href.startsWith('javascript:')) {
+                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\(['"]([^'"]+)['"]\)/);
+                  if (m) {
+                    try { linkPath = decodeURI(m[1]); } catch { linkPath = m[1]; }
+                  }
+                } else {
+                  linkPath = href;
+                }
+              }
+              const linkText = linkEl.innerText.trim();
+
+              items.push({
+                icon: '🔗',
+                label: 'Copy Link / File Path',
+                action: () => copyLinkPath(linkPath, 'Link path')
+              });
+
+              if (linkText && linkText !== linkPath) {
+                items.push({
+                  icon: '📝',
+                  label: 'Copy Link Text',
+                  action: () => copyLinkText(linkText)
+                });
+              }
+
+              items.push({
+                icon: '↗️',
+                label: 'Open Link / File',
+                action: () => linkEl.click()
+              });
+
+              if (selectedText) {
+                items.push({ separator: true });
+                items.push({
+                  icon: '📋',
+                  label: 'Copy Selection',
+                  action: () => copySelectionText(selectedText)
+                });
+              }
+
+              showContextMenu(e, items);
+              return;
+            }
+
+            if (codeEl) {
+              const codeText = codeEl.innerText || '';
+              if (selectedText) {
+                items.push({
+                  icon: '📋',
+                  label: 'Copy Selected Text',
+                  action: () => copySelectionText(selectedText)
+                });
+              }
+              items.push({
+                icon: '📄',
+                label: 'Copy Code Block',
+                action: () => copyCodeBlock(codeText)
+              });
+
+              showContextMenu(e, items);
+              return;
+            }
+
+            if (selectedText) {
+              items.push({
+                icon: '📋',
+                label: 'Copy',
+                action: () => copySelectionText(selectedText)
+              });
+              showContextMenu(e, items);
+              return;
+            }
+
+            closeContextMenu();
+          });
+
+          // Selection-aware click suppression: prevent link navigation or modal opening when finishing mouse drag selection
+          document.addEventListener('click', (e) => {
+            const selection = window.getSelection();
+            const hasSelection = selection && !selection.isCollapsed && selection.toString().trim().length > 0;
+            if (hasSelection) {
+              const targetLinkOrImg = e.target.closest('a, img, .chat-rendered-img');
+              if (targetLinkOrImg) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+            }
+            closeContextMenu();
+          }, true);
+
+          window.addEventListener('scroll', () => closeContextMenu(), true);
+          window.addEventListener('resize', () => closeContextMenu());
+
+          function openMediaModal(src) {
+            const modal = document.getElementById('mediaModal');
+            const img = document.getElementById('mediaModalImg');
+            if (modal && img) {
+              img.src = src;
+              modal.classList.add('visible');
+            }
+          }
+
+          function closeMediaModal() {
+            const modal = document.getElementById('mediaModal');
+            const content = document.getElementById('mediaModalContent');
+            const label = document.getElementById('modalZoomLabel');
+            if (modal) {
+              modal.classList.remove('visible');
+            }
+            if (content) {
+              content.classList.remove('zoomed');
+            }
+            isModalZoomed = false;
+            if (label) {
+              label.textContent = 'Actual Size';
+            }
+          }
+
+          function copyModalImage() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              copyImageToClipboard(img.src);
+            }
+          }
+
+          function copyModalImagePath() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              copyLinkPath(img.src, 'Image path');
+            }
+          }
+
+          function saveModalImage() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              vscode.postMessage({ command: 'saveImageAs', imageSrc: img.src });
+            }
+          }
+
+          function openModalImageExternal() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              vscode.postMessage({ command: 'openImageExternal', imageSrc: img.src });
+            }
+          }
+
+          let isModalZoomed = false;
+          function toggleModalZoom() {
+            const content = document.getElementById('mediaModalContent');
+            const label = document.getElementById('modalZoomLabel');
+            if (!content) return;
+            isModalZoomed = !isModalZoomed;
+            content.classList.toggle('zoomed', isModalZoomed);
+            if (label) {
+              label.textContent = isModalZoomed ? 'Fit Screen' : 'Actual Size';
+            }
+          }
+
+          window.openMediaModal = openMediaModal;
+          window.closeMediaModal = closeMediaModal;
+          window.copyModalImage = copyModalImage;
+          window.copyModalImagePath = copyModalImagePath;
+          window.saveModalImage = saveModalImage;
+          window.openModalImageExternal = openModalImageExternal;
+          window.toggleModalZoom = toggleModalZoom;
+          window.showToast = showToast;
+          window.copyImageToClipboard = copyImageToClipboard;
+          window.copyLinkPath = copyLinkPath;
+          window.copyLinkText = copyLinkText;
 
           function openInEditor() {
             vscode.postMessage({ command: 'openInEditor' });
@@ -2034,6 +2719,11 @@ export class MarkdownPreviewWebviewPanel {
           });
 
           window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+              closeContextMenu();
+              closeMediaModal();
+            }
+
             const modal = document.getElementById('diagramModal');
             if (!modal || !modal.classList.contains('active')) return;
 

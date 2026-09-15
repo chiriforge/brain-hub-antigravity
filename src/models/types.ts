@@ -25,6 +25,17 @@ export interface ChatMessage {
   sessionOriginId?: string;
 }
 
+export interface SessionArtifactItem {
+  name: string;
+  filePath: string;
+  category: 'document' | 'image' | 'video' | 'scratch' | 'other';
+  source: 'ai_generated' | 'user_uploaded' | 'plan' | 'walkthrough' | 'scratch' | 'other';
+  sizeBytes: number;
+  mtime: Date;
+  prompt?: string;
+  mimeType?: string;
+}
+
 export interface ChatSession {
   id: string;
   path: string;
@@ -42,6 +53,8 @@ export interface ChatSession {
   hasArtifacts: boolean;
   planPath?: string;
   walkthroughPath?: string;
+  artifacts?: SessionArtifactItem[];
+  artifactCount?: number;
   parentId?: string;
   rootId?: string;
   childIds?: string[];

@@ -82,6 +82,17 @@ export class DashboardWebviewPanel {
       return DashboardWebviewPanel.currentPanel;
     }
 
+    const scanner = SessionScanner.getInstance();
+    const brainRoots = scanner.getAllTargetDirectories().map((d) => vscode.Uri.file(d));
+    const localRoots: vscode.Uri[] = [
+      vscode.Uri.file(path.join(extensionUri.fsPath, 'media')),
+      vscode.Uri.file(path.join(extensionUri.fsPath, 'dist')),
+      ...brainRoots
+    ];
+    if (vscode.workspace.workspaceFolders) {
+      vscode.workspace.workspaceFolders.forEach((wf) => localRoots.push(wf.uri));
+    }
+
     const panel = vscode.window.createWebviewPanel(
       'brainHubDashboard',
       'Brain Hub for Antigravity',
@@ -89,10 +100,7 @@ export class DashboardWebviewPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [
-          vscode.Uri.file(path.join(extensionUri.fsPath, 'media')),
-          vscode.Uri.file(path.join(extensionUri.fsPath, 'dist'))
-        ]
+        localResourceRoots: localRoots
       }
     );
 
@@ -282,6 +290,11 @@ export class DashboardWebviewPanel {
               }
             }
             break;
+          case 'revealFileInOS':
+            if (message.filePath) {
+              await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(message.filePath));
+            }
+            break;
 
           case 'openFile':
             if (message.filePath) {
@@ -325,6 +338,14 @@ export class DashboardWebviewPanel {
             if (this.selectedSessionId) {
               await vscode.commands.executeCommand('brainHub.deleteSession', this.selectedSessionId);
             }
+            break;
+
+          case 'saveImageAs':
+            await this.handleSaveImageAs(message.imageSrc);
+            break;
+
+          case 'openImageExternal':
+            await this.handleOpenImageExternal(message.imageSrc);
             break;
 
           case 'deepSearchSessions': {
@@ -434,6 +455,97 @@ export class DashboardWebviewPanel {
       isWorkspaceFiltered,
       hideEmptySessions
     });
+  }
+
+  private async handleSaveImageAs(rawSrc?: string): Promise<void> {
+    if (!rawSrc) return;
+    try {
+      let defaultName = 'image_' + Date.now() + '.png';
+      let buffer: Buffer | null = null;
+
+      if (rawSrc.startsWith('data:image/')) {
+        const matches = rawSrc.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+        if (matches) {
+          const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+          defaultName = `image_${Date.now()}.${ext}`;
+          buffer = Buffer.from(matches[2], 'base64');
+        }
+      } else if (rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        try {
+          const urlObj = new URL(rawSrc);
+          const base = path.basename(urlObj.pathname);
+          if (base && base.includes('.')) defaultName = base;
+        } catch {}
+      } else {
+        let localPath = rawSrc;
+        if (localPath.startsWith('file:///')) {
+          localPath = vscode.Uri.parse(localPath).fsPath;
+        } else if (localPath.startsWith('vscode-webview-resource:') || localPath.startsWith('vscode-resource:')) {
+          const parsed = vscode.Uri.parse(localPath);
+          localPath = parsed.fsPath;
+        }
+        if (fs.existsSync(localPath)) {
+          defaultName = path.basename(localPath);
+          buffer = await fs.promises.readFile(localPath);
+        }
+      }
+
+      let defaultDir = '';
+      if (this.selectedSessionId) {
+        const scanner = SessionScanner.getInstance();
+        const s = scanner.getCachedSessions().find(x => x.id === this.selectedSessionId);
+        if (s) defaultDir = s.workspacePath || s.path;
+      }
+
+      const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(defaultDir, defaultName)),
+        filters: {
+          'Images': ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'],
+          'All Files': ['*']
+        }
+      });
+
+      if (!saveUri) return;
+
+      if (buffer) {
+        await fs.promises.writeFile(saveUri.fsPath, buffer);
+      } else if (rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        const res = await fetch(rawSrc);
+        const arrayBuf = await res.arrayBuffer();
+        await fs.promises.writeFile(saveUri.fsPath, Buffer.from(arrayBuf));
+      } else {
+        let srcPath = rawSrc;
+        if (srcPath.startsWith('file:///')) {
+          srcPath = vscode.Uri.parse(srcPath).fsPath;
+        }
+        if (fs.existsSync(srcPath)) {
+          await fs.promises.copyFile(srcPath, saveUri.fsPath);
+        }
+      }
+
+      vscode.window.showInformationMessage(`Image saved to ${saveUri.fsPath}`);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Failed to save image: ${err?.message || err}`);
+    }
+  }
+
+  private async handleOpenImageExternal(rawSrc?: string): Promise<void> {
+    if (!rawSrc) return;
+    try {
+      let targetUri: vscode.Uri;
+      if (rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        targetUri = vscode.Uri.parse(rawSrc);
+      } else {
+        let localPath = rawSrc;
+        if (localPath.startsWith('file:///')) {
+          localPath = vscode.Uri.parse(localPath).fsPath;
+        }
+        targetUri = vscode.Uri.file(localPath);
+      }
+      await vscode.env.openExternal(targetUri);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Could not open image externally: ${err?.message || err}`);
+    }
   }
 
   private async handleOpenFile(rawPath?: string, openMode?: 'rich' | 'ide' | 'editor'): Promise<void> {
@@ -1031,8 +1143,13 @@ export class DashboardWebviewPanel {
     const timeTagStr = DashboardWebviewPanel.formatDateTimeRange(s.createdAt, s.lastModified, false);
 
     const isThread = Boolean((s.childIds && s.childIds.length > 0) || s.parentId);
-    const threadTag = isThread ? '<span class="info-tag type-thread" title="Connected Conversation Thread">🧵</span>' : '';
-    const artifactTag = s.hasArtifacts ? '<span class="info-tag type-artifact" title="Has Implementation Plan or Walkthrough Artifacts">🔖</span>' : '';
+    const threadTag = isThread
+      ? '<span class="info-tag type-thread" title="Connected Conversation Thread">🧵 Thread</span>'
+      : '<span class="info-tag type-chat" title="Single Standalone Conversation">💬 Chat</span>';
+    const totalArtifacts = s.artifactCount || (s.artifacts ? s.artifacts.length : (s.hasArtifacts ? 1 : 0));
+    const artifactTag = (s.hasArtifacts || totalArtifacts > 0)
+      ? `<span class="info-tag type-artifact" title="${totalArtifacts} Session Artifact(s) Available">📦 ${totalArtifacts > 0 ? totalArtifacts : 'Artifacts'}</span>`
+      : '';
     const typeBadge = `${threadTag}${artifactTag}`;
 
     const wsTag = s.workspaceName ? `<span class="info-tag ws" title="Project Folder: ${s.workspacePath || s.workspaceName}">📁 ${MarkdownRenderer.escapeHtml(s.workspaceName)}</span>` : '';
@@ -2162,6 +2279,16 @@ export class DashboardWebviewPanel {
             border-color: rgba(188, 140, 255, 0.2);
           }
 
+          .dashboard-reader-wrapper {
+            position: relative;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            height: 100%;
+            overflow: hidden;
+          }
+
           .dashboard-reader {
             flex: 1;
             display: flex;
@@ -2673,7 +2800,7 @@ export class DashboardWebviewPanel {
             inset: 0;
             background: rgba(0, 0, 0, 0.85);
             backdrop-filter: blur(6px);
-            z-index: 1000;
+            z-index: 20000;
             display: none;
             align-items: center;
             justify-content: center;
@@ -2728,6 +2855,130 @@ export class DashboardWebviewPanel {
             background: var(--accent-red, #e51400);
             color: #ffffff;
             transform: scale(1.1);
+          }
+
+          /* Media Modal Floating Toolbar */
+          .media-modal-toolbar {
+            position: absolute;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--vscode-editorWidget-background, #252526);
+            border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+            border-radius: 8px;
+            padding: 5px 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+            z-index: 1010;
+          }
+
+          .media-toolbar-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.08));
+            color: var(--vscode-button-secondaryForeground, #cccccc);
+            border: 1px solid var(--border-color, transparent);
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11.5px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+          }
+
+          .media-toolbar-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground, rgba(255, 255, 255, 0.16));
+            color: #ffffff;
+          }
+
+          .media-toolbar-close {
+            background: transparent;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 4px 8px;
+          }
+
+          .media-toolbar-close:hover {
+            background: var(--vscode-errorForeground, #f14c4c);
+            color: #ffffff;
+          }
+
+          .media-modal-content.zoomed {
+            overflow: auto;
+            max-width: 96vw;
+            max-height: 86vh;
+            display: block;
+            cursor: grab;
+          }
+
+          .media-modal-content.zoomed .media-modal-img {
+            max-width: none;
+            max-height: none;
+            display: block;
+            margin: auto;
+          }
+
+          /* Custom In-Webview Context Menu */
+          .custom-context-menu {
+            position: fixed;
+            z-index: 10000;
+            background: var(--vscode-menu-background, #252526);
+            color: var(--vscode-menu-foreground, #cccccc);
+            border: 1px solid var(--vscode-menu-border, rgba(128, 128, 128, 0.35));
+            border-radius: 5px;
+            box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+            padding: 4px 0;
+            min-width: 180px;
+            max-width: 320px;
+            font-family: var(--font-family);
+            font-size: 12px;
+            user-select: none;
+            -webkit-user-select: none;
+          }
+
+          .context-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+            color: var(--vscode-menu-foreground, #cccccc);
+            transition: background 0.05s ease, color 0.05s ease;
+          }
+
+          .context-menu-item:hover, .context-menu-item:focus {
+            background: var(--vscode-menu-selectionBackground, #094771);
+            color: var(--vscode-menu-selectionForeground, #ffffff);
+            outline: none;
+          }
+
+          .context-menu-item .menu-icon {
+            font-size: 13px;
+            width: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.85;
+          }
+
+          .context-menu-item:hover .menu-icon {
+            opacity: 1;
+          }
+
+          .context-menu-item .menu-label {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .context-menu-separator {
+            height: 1px;
+            background: var(--vscode-menu-separatorBackground, var(--border-color));
+            margin: 4px 0;
           }
 
           .copy-msg-btn {
@@ -3424,8 +3675,39 @@ export class DashboardWebviewPanel {
             </div>
           </div>
 
-          <div class="dashboard-reader" id="dashboardReader">
-            ${chatViewHtml}
+          <div class="dashboard-reader-wrapper">
+            <div class="dashboard-reader" id="dashboardReader">
+              ${chatViewHtml}
+            </div>
+
+            <!-- Centered Artifacts Quick Viewer Modal (Anchored to Detail View Region) -->
+            <div class="artifacts-modal-overlay" id="artifactsModal" onclick="if(event.target === this) closeArtifactsModal()">
+              <div class="artifacts-modal-container">
+                <div class="artifacts-modal-header">
+                  <div class="artifacts-modal-title">
+                    <span class="artifacts-modal-icon">📦</span>
+                    <span class="artifacts-modal-heading">Session Artifacts</span>
+                    <span class="artifacts-modal-count" id="artifactsTotalCount">0</span>
+                  </div>
+                  <div class="artifacts-modal-header-actions">
+                    <button class="artifacts-header-btn" onclick="openSessionFolderInOS()" title="Reveal session directory in OS File Explorer">
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1L5.938 1.4A1.75 1.75 0 0 0 4.75 1ZM1.5 2.75a.25.25 0 0 1 .25-.25h3a.25.25 0 0 1 .17.07l1.538 1.63a1.75 1.75 0 0 0 1.292.55h6.5a.25.25 0 0 1 .25.25v1.25H1.5Zm0 3h13v7.5a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25Z"></path></svg>
+                      Open Folder
+                    </button>
+                    <button class="artifacts-close-btn" onclick="closeArtifactsModal()" title="Close (Esc)">✕</button>
+                  </div>
+                </div>
+                <div class="artifacts-modal-tabs">
+                  <button class="artifacts-tab active" data-tab="all" onclick="switchArtifactsTab('all')">All <span class="tab-badge" id="tabCountAll">0</span></button>
+                  <button class="artifacts-tab" data-tab="image" onclick="switchArtifactsTab('image')">🖼️ Media <span class="tab-badge" id="tabCountMedia">0</span></button>
+                  <button class="artifacts-tab" data-tab="document" onclick="switchArtifactsTab('document')">📄 Documents <span class="tab-badge" id="tabCountDocs">0</span></button>
+                  <button class="artifacts-tab" data-tab="scratch" onclick="switchArtifactsTab('scratch')">🧪 Scratch <span class="tab-badge" id="tabCountScratch">0</span></button>
+                </div>
+                <div class="artifacts-modal-body" id="artifactsGridContainer">
+                  <!-- Dynamic Grid of Artifact Cards -->
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -3546,10 +3828,39 @@ export class DashboardWebviewPanel {
 
         <!-- Fullscreen Media Lightbox Modal -->
         <div class="media-modal-overlay" id="mediaModal" onclick="if(event.target === this) closeMediaModal()">
-          <div class="media-modal-content">
-            <button class="media-modal-close-btn" onclick="closeMediaModal()" title="Close full view">✕</button>
+          <div class="media-modal-toolbar">
+            <button class="media-toolbar-btn" id="btnModalCopyImg" onclick="copyModalImage()" title="Copy binary image (PNG) to clipboard">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path></svg>
+              <span>Copy Image</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalCopyPath" onclick="copyModalImagePath()" title="Copy image path / URL">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-4.69 9.64a1.998 1.998 0 0 0 2.83 0l1.25-1.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042l-1.25 1.25a3.5 3.5 0 1 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018 1.998 1.998 0 0 0-2.83 0l-2.5 2.5a1.998 1.998 0 0 0 0 2.83Z"></path></svg>
+              <span>Copy Path</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalSaveAs" onclick="saveModalImage()" title="Save image to disk">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14Z"></path><path d="M7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.969a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.969Z"></path></svg>
+              <span>Save As...</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalOpenExt" onclick="openModalImageExternal()" title="Open in default system viewer">
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.75.75a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V3.56l-5.22 5.22a.749.749 0 0 1-1.06-1.06l5.22-5.22H11.25a.75.75 0 0 1-.75-.75Z"></path></svg>
+              <span>Open in System</span>
+            </button>
+            <button class="media-toolbar-btn" id="btnModalZoom" onclick="toggleModalZoom()" title="Toggle actual size (100%) vs fit screen">
+              <span id="modalZoomIcon">🔍</span>
+              <span id="modalZoomLabel">Actual Size</span>
+            </button>
+            <button class="media-toolbar-btn media-toolbar-close" onclick="closeMediaModal()" title="Close full view (Esc)">
+              ✕
+            </button>
+          </div>
+          <div class="media-modal-content" id="mediaModalContent">
             <img id="mediaModalImg" class="media-modal-img" src="" alt="Enlarged Image / Attachment">
           </div>
+        </div>
+
+        <!-- Custom In-Webview Context Menu -->
+        <div id="customContextMenu" class="custom-context-menu" style="display:none;" role="menu">
+          <div class="context-menu-list" id="customContextMenuList"></div>
         </div>
 
         <script>
@@ -3600,6 +3911,297 @@ export class DashboardWebviewPanel {
           window.toggleSidebarWorkspaceFilter = toggleSidebarWorkspaceFilter;
           window.toggleSidebarHideEmpty = toggleSidebarHideEmpty;
 
+          function showToast(message, type = 'info', duration = 2500) {
+            let toast = document.getElementById('webviewToast');
+            if (!toast) {
+              toast = document.createElement('div');
+              toast.id = 'webviewToast';
+              toast.className = 'webview-toast';
+              document.body.appendChild(toast);
+            }
+            toast.textContent = message;
+            toast.className = 'webview-toast visible ' + type;
+            if (window._toastTimeout) clearTimeout(window._toastTimeout);
+            window._toastTimeout = setTimeout(() => {
+              toast.classList.remove('visible');
+            }, duration);
+          }
+
+          async function copyImageToClipboard(src) {
+            try {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = src;
+              });
+
+              const canvas = document.createElement('canvas');
+              canvas.width = img.naturalWidth || img.width;
+              canvas.height = img.naturalHeight || img.height;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) throw new Error('Canvas context unavailable');
+              ctx.drawImage(img, 0, 0);
+
+              const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+              if (!blob) throw new Error('Blob conversion failed');
+
+              if (navigator.clipboard && navigator.clipboard.write) {
+                await navigator.clipboard.write([
+                  new ClipboardItem({ 'image/png': blob })
+                ]);
+                showToast('Image copied to clipboard (PNG)!', 'success');
+                return true;
+              }
+            } catch (err) {
+              console.warn('Direct binary image copy failed, copying path:', err);
+            }
+
+            copyLinkPath(src, 'Image path');
+          }
+
+          function copyLinkPath(path, label = 'Path') {
+            if (!path) return;
+            navigator.clipboard.writeText(path).then(() => {
+              showToast(label + ' copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: path });
+              showToast(label + ' copied to clipboard!', 'info');
+            });
+          }
+
+          function copyLinkText(text) {
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+              showToast('Link text copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: text });
+              showToast('Link text copied to clipboard!', 'info');
+            });
+          }
+
+          function copySelectionText(text) {
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+              showToast('Copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: text });
+              showToast('Copied to clipboard!', 'info');
+            });
+          }
+
+          function copyCodeBlock(code) {
+            if (!code) return;
+            navigator.clipboard.writeText(code).then(() => {
+              showToast('Code block copied to clipboard!', 'info');
+            }).catch(() => {
+              vscode.postMessage({ command: 'copyText', text: code });
+              showToast('Code block copied to clipboard!', 'info');
+            });
+          }
+
+          function showContextMenu(e, items) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const menu = document.getElementById('customContextMenu');
+            const list = document.getElementById('customContextMenuList');
+            if (!menu || !list) return;
+
+            list.innerHTML = '';
+            items.forEach(item => {
+              if (item.separator) {
+                const sep = document.createElement('div');
+                sep.className = 'context-menu-separator';
+                list.appendChild(sep);
+                return;
+              }
+              const itemEl = document.createElement('div');
+              itemEl.className = 'context-menu-item';
+              itemEl.setAttribute('role', 'menuitem');
+              itemEl.tabIndex = 0;
+              itemEl.innerHTML = '<span class="menu-icon">' + item.icon + '</span><span class="menu-label">' + item.label + '</span>';
+              itemEl.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                closeContextMenu();
+                item.action();
+              });
+              list.appendChild(itemEl);
+            });
+
+            menu.style.display = 'block';
+
+            const menuWidth = 220;
+            const menuHeight = items.length * 28 + 16;
+            let posX = e.clientX;
+            let posY = e.clientY;
+
+            if (posX + menuWidth > window.innerWidth) {
+              posX = Math.max(10, window.innerWidth - menuWidth - 10);
+            }
+            if (posY + menuHeight > window.innerHeight) {
+              posY = Math.max(10, window.innerHeight - menuHeight - 10);
+            }
+
+            menu.style.left = posX + 'px';
+            menu.style.top = posY + 'px';
+          }
+
+          function closeContextMenu() {
+            const menu = document.getElementById('customContextMenu');
+            if (menu) {
+              menu.style.display = 'none';
+            }
+          }
+
+          document.addEventListener('contextmenu', (e) => {
+            const selection = window.getSelection();
+            const selectedText = (selection && !selection.isCollapsed) ? selection.toString().trim() : '';
+
+            const linkEl = e.target.closest('a');
+            const imgEl = e.target.closest('img, .user-media-thumb, .chat-rendered-img');
+            const codeEl = e.target.closest('.code-container, pre, code');
+
+            const items = [];
+
+            if (imgEl) {
+              const rawSrc = imgEl.getAttribute('data-image-src') || imgEl.getAttribute('src') || '';
+              const cleanPath = imgEl.getAttribute('data-original-path') || imgEl.getAttribute('data-decoded-path') || rawSrc;
+
+              items.push({
+                icon: '🖼️',
+                label: 'Copy Image',
+                action: () => copyImageToClipboard(rawSrc)
+              });
+              items.push({
+                icon: '📋',
+                label: 'Copy Image Path / URL',
+                action: () => copyLinkPath(cleanPath, 'Image path')
+              });
+              items.push({
+                icon: '💾',
+                label: 'Save Image As...',
+                action: () => vscode.postMessage({ command: 'saveImageAs', imageSrc: rawSrc })
+              });
+              items.push({
+                icon: '↗️',
+                label: 'Open in System',
+                action: () => vscode.postMessage({ command: 'openImageExternal', imageSrc: rawSrc })
+              });
+
+              const isInsideModal = !!imgEl.closest('#mediaModal');
+              if (!isInsideModal) {
+                items.push({ separator: true });
+                items.push({
+                  icon: '🔍',
+                  label: 'Enlarge Image',
+                  action: () => openMediaModal(rawSrc)
+                });
+              }
+
+              showContextMenu(e, items);
+              return;
+            }
+
+            if (linkEl) {
+              let linkPath = linkEl.getAttribute('data-decoded-path') || '';
+              if (!linkPath) {
+                const href = linkEl.getAttribute('href') || '';
+                if (href.startsWith('javascript:')) {
+                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\(['"]([^'"]+)['"]\)/);
+                  if (m) {
+                    try { linkPath = decodeURI(m[1]); } catch { linkPath = m[1]; }
+                  }
+                } else {
+                  linkPath = href;
+                }
+              }
+              const linkText = linkEl.innerText.trim();
+
+              items.push({
+                icon: '🔗',
+                label: 'Copy Link / File Path',
+                action: () => copyLinkPath(linkPath, 'Link path')
+              });
+
+              if (linkText && linkText !== linkPath) {
+                items.push({
+                  icon: '📝',
+                  label: 'Copy Link Text',
+                  action: () => copyLinkText(linkText)
+                });
+              }
+
+              items.push({
+                icon: '↗️',
+                label: 'Open Link / File',
+                action: () => linkEl.click()
+              });
+
+              if (selectedText) {
+                items.push({ separator: true });
+                items.push({
+                  icon: '📋',
+                  label: 'Copy Selection',
+                  action: () => copySelectionText(selectedText)
+                });
+              }
+
+              showContextMenu(e, items);
+              return;
+            }
+
+            if (codeEl) {
+              const codeText = codeEl.innerText || '';
+              if (selectedText) {
+                items.push({
+                  icon: '📋',
+                  label: 'Copy Selected Text',
+                  action: () => copySelectionText(selectedText)
+                });
+              }
+              items.push({
+                icon: '📄',
+                label: 'Copy Code Block',
+                action: () => copyCodeBlock(codeText)
+              });
+
+              showContextMenu(e, items);
+              return;
+            }
+
+            if (selectedText) {
+              items.push({
+                icon: '📋',
+                label: 'Copy',
+                action: () => copySelectionText(selectedText)
+              });
+              showContextMenu(e, items);
+              return;
+            }
+
+            closeContextMenu();
+          });
+
+          // Selection-aware click suppression: prevent link navigation or modal opening when finishing mouse drag selection
+          document.addEventListener('click', (e) => {
+            const selection = window.getSelection();
+            const hasSelection = selection && !selection.isCollapsed && selection.toString().trim().length > 0;
+            if (hasSelection) {
+              const targetLinkOrImg = e.target.closest('a, .chat-rendered-img, .user-media-item, .user-media-thumb');
+              if (targetLinkOrImg) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+            }
+            closeContextMenu();
+          }, true);
+
+          window.addEventListener('scroll', () => closeContextMenu(), true);
+          window.addEventListener('resize', () => closeContextMenu());
+
           function openMediaModal(src) {
             const modal = document.getElementById('mediaModal');
             const img = document.getElementById('mediaModalImg');
@@ -3611,14 +4213,70 @@ export class DashboardWebviewPanel {
 
           function closeMediaModal() {
             const modal = document.getElementById('mediaModal');
+            const content = document.getElementById('mediaModalContent');
+            const label = document.getElementById('modalZoomLabel');
             if (modal) {
               modal.classList.remove('visible');
+            }
+            if (content) {
+              content.classList.remove('zoomed');
+            }
+            isModalZoomed = false;
+            if (label) {
+              label.textContent = 'Actual Size';
+            }
+          }
+
+          function copyModalImage() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              copyImageToClipboard(img.src);
+            }
+          }
+
+          function copyModalImagePath() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              copyLinkPath(img.src, 'Image path');
+            }
+          }
+
+          function saveModalImage() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              vscode.postMessage({ command: 'saveImageAs', imageSrc: img.src });
+            }
+          }
+
+          function openModalImageExternal() {
+            const img = document.getElementById('mediaModalImg');
+            if (img && img.src) {
+              vscode.postMessage({ command: 'openImageExternal', imageSrc: img.src });
+            }
+          }
+
+          let isModalZoomed = false;
+          function toggleModalZoom() {
+            const content = document.getElementById('mediaModalContent');
+            const label = document.getElementById('modalZoomLabel');
+            if (!content) return;
+            isModalZoomed = !isModalZoomed;
+            content.classList.toggle('zoomed', isModalZoomed);
+            if (label) {
+              label.textContent = isModalZoomed ? 'Fit Screen' : 'Actual Size';
             }
           }
 
           document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' || e.keyCode === 27) {
-              closeMediaModal();
+              if (document.getElementById('mediaModal')?.classList.contains('visible')) {
+                closeMediaModal();
+                return;
+              }
+              if (document.getElementById('artifactsModal')?.classList.contains('active')) {
+                closeArtifactsModal();
+                return;
+              }
               closeConfigModal();
             } else if (e.key === 'Enter') {
               const target = e.target;
@@ -3638,6 +4296,175 @@ export class DashboardWebviewPanel {
               }
             }
           });
+
+          // Artifacts Modal Controller
+          let currentArtifactsTab = 'all';
+
+          function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+          }
+
+          function openArtifactsModal() {
+            const dataHolder = document.getElementById('artifactsDataHolder');
+            if (dataHolder) {
+              try {
+                const b64 = dataHolder.getAttribute('data-artifacts') || '';
+                window.sessionArtifacts = b64 ? JSON.parse(atob(b64)) : [];
+              } catch (e) {
+                window.sessionArtifacts = [];
+              }
+            }
+            const modal = document.getElementById('artifactsModal');
+            if (!modal) return;
+            renderArtifactsGrid(currentArtifactsTab);
+            modal.classList.add('active');
+          }
+
+          function closeArtifactsModal() {
+            const modal = document.getElementById('artifactsModal');
+            if (modal) {
+              modal.classList.remove('active');
+            }
+          }
+
+          function switchArtifactsTab(tab) {
+            currentArtifactsTab = tab;
+            document.querySelectorAll('.artifacts-tab').forEach(el => {
+              el.classList.toggle('active', el.getAttribute('data-tab') === tab);
+            });
+            renderArtifactsGrid(tab);
+          }
+
+          function renderArtifactsGrid(tab) {
+            const container = document.getElementById('artifactsGridContainer');
+            if (!container) return;
+            const all = window.sessionArtifacts || [];
+
+            let filtered = all;
+            if (tab === 'image') {
+              filtered = all.filter(a => a.category === 'image' || a.category === 'video');
+            } else if (tab === 'document') {
+              filtered = all.filter(a => a.category === 'document');
+            } else if (tab === 'scratch') {
+              filtered = all.filter(a => a.category === 'scratch');
+            }
+
+            const totalEl = document.getElementById('artifactsTotalCount');
+            if (totalEl) totalEl.textContent = all.length;
+            const cAll = document.getElementById('tabCountAll');
+            if (cAll) cAll.textContent = all.length;
+            const cMedia = document.getElementById('tabCountMedia');
+            if (cMedia) cMedia.textContent = all.filter(a => a.category === 'image' || a.category === 'video').length;
+            const cDocs = document.getElementById('tabCountDocs');
+            if (cDocs) cDocs.textContent = all.filter(a => a.category === 'document').length;
+            const cScratch = document.getElementById('tabCountScratch');
+            if (cScratch) cScratch.textContent = all.filter(a => a.category === 'scratch').length;
+
+            if (filtered.length === 0) {
+              container.innerHTML = '<div class="artifacts-empty-state">No artifacts found in this category.</div>';
+              return;
+            }
+
+            container.innerHTML = filtered.map(art => {
+              const isMedia = art.category === 'image' || art.category === 'video';
+              const isDoc = art.category === 'document';
+              const promptHtml = art.prompt ? '<div class="artifact-card-prompt" title="' + escapeHtml(art.prompt) + '">💡 ' + escapeHtml(art.prompt) + '</div>' : '';
+              const sizeStr = formatBytes(art.sizeBytes);
+
+              let badgeClass = 'ai';
+              let badgeLabel = 'AI Asset';
+              if (art.source === 'user_uploaded') {
+                badgeClass = 'user';
+                badgeLabel = 'Upload';
+              } else if (art.source === 'plan' || art.source === 'walkthrough') {
+                badgeClass = 'plan';
+                badgeLabel = art.source === 'plan' ? 'Plan' : 'Walkthrough';
+              } else if (art.source === 'scratch') {
+                badgeClass = 'scratch';
+                badgeLabel = 'Scratch';
+              }
+
+              const webUriAttr = escapeAttr(art.webUri || '');
+              const filePathAttr = escapeAttr(art.filePath || '');
+
+              let previewHtml = '';
+              if (isMedia) {
+                previewHtml = '<div class="artifact-card-preview" data-uri="' + webUriAttr + '" onclick="openArtifactMedia(this)" title="Click to view enlarged media"><img src="' + webUriAttr + '" loading="lazy" class="artifact-card-img" alt="' + escapeHtml(art.name) + '" /><span class="artifact-card-badge ' + badgeClass + '">' + badgeLabel + '</span><div class="artifact-card-hover-actions"><button class="artifact-btn-overlay" data-uri="' + webUriAttr + '" onclick="event.stopPropagation();openArtifactMedia(this)" title="Zoom">🔍</button><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();copyArtifactPath(this)" title="Copy Path">📋</button><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();revealArtifactInOS(this)" title="Show in Explorer">📂</button></div></div>';
+              } else if (isDoc) {
+                const icon = art.source === 'plan' ? '📋' : (art.source === 'walkthrough' ? '✅' : '📄');
+                previewHtml = '<div class="artifact-card-preview artifact-card-icon-preview" data-path="' + filePathAttr + '" onclick="previewArtifactDoc(this)" title="Click to preview markdown"><span>' + icon + '</span><span class="artifact-card-badge ' + badgeClass + '">' + badgeLabel + '</span><div class="artifact-card-hover-actions"><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();previewArtifactDoc(this)" title="Preview">👁️</button><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();editArtifactDoc(this)" title="Edit">📝</button><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();copyArtifactPath(this)" title="Copy Path">📋</button></div></div>';
+              } else {
+                previewHtml = '<div class="artifact-card-preview artifact-card-icon-preview" data-path="' + filePathAttr + '" onclick="editArtifactDoc(this)" title="Click to open file"><span>🧪</span><span class="artifact-card-badge ' + badgeClass + '">' + badgeLabel + '</span><div class="artifact-card-hover-actions"><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();editArtifactDoc(this)" title="Open">📝</button><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();copyArtifactPath(this)" title="Copy Path">📋</button><button class="artifact-btn-overlay" data-path="' + filePathAttr + '" onclick="event.stopPropagation();revealArtifactInOS(this)" title="Show in Explorer">📂</button></div></div>';
+              }
+
+              return '<div class="artifact-card" data-category="' + art.category + '">' +
+                previewHtml +
+                '<div class="artifact-card-info">' +
+                  '<div class="artifact-card-name" title="' + escapeHtml(art.name) + '">' + escapeHtml(art.name) + '</div>' +
+                  '<div class="artifact-card-meta"><span>' + sizeStr + '</span><span>' + badgeLabel + '</span></div>' +
+                '</div>' +
+              '</div>';
+            }).join('');
+          }
+
+          function openArtifactMedia(el) {
+            const uri = el ? el.getAttribute('data-uri') : '';
+            if (uri) openMediaModal(uri);
+          }
+
+          function copyArtifactPath(el) {
+            const p = el ? el.getAttribute('data-path') : '';
+            if (p) copyTextToClipboard(p);
+          }
+
+          function revealArtifactInOS(el) {
+            const p = el ? el.getAttribute('data-path') : '';
+            if (p) revealFileInOS(p);
+          }
+
+          function previewArtifactDoc(el) {
+            const p = el ? el.getAttribute('data-path') : '';
+            if (p) openRichPreview(p);
+          }
+
+          function editArtifactDoc(el) {
+            const p = el ? el.getAttribute('data-path') : '';
+            if (p) openFile(p);
+          }
+
+          function openSessionFolderInOS() {
+            vscode.postMessage({ command: 'openFolder' });
+          }
+
+          function revealFileInOS(filePath) {
+            vscode.postMessage({ command: 'revealFileInOS', filePath });
+          }
+
+          function copyTextToClipboard(text) {
+            vscode.postMessage({ command: 'copyText', text });
+            showToast('File path copied to clipboard!');
+          }
+
+          function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          }
+
+          function escapeAttr(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+          }
+
+          window.openArtifactsModal = openArtifactsModal;
+          window.closeArtifactsModal = closeArtifactsModal;
+          window.switchArtifactsTab = switchArtifactsTab;
+          window.openSessionFolderInOS = openSessionFolderInOS;
+          window.revealFileInOS = revealFileInOS;
+          window.copyTextToClipboard = copyTextToClipboard;
 
           function loadLatestChat() {
             const btn = document.getElementById('btnLoadLatestChat');
@@ -3766,6 +4593,15 @@ export class DashboardWebviewPanel {
 
           window.openMediaModal = openMediaModal;
           window.closeMediaModal = closeMediaModal;
+          window.copyModalImage = copyModalImage;
+          window.copyModalImagePath = copyModalImagePath;
+          window.saveModalImage = saveModalImage;
+          window.openModalImageExternal = openModalImageExternal;
+          window.toggleModalZoom = toggleModalZoom;
+          window.showToast = showToast;
+          window.copyImageToClipboard = copyImageToClipboard;
+          window.copyLinkPath = copyLinkPath;
+          window.copyLinkText = copyLinkText;
           window.loadLatestChat = loadLatestChat;
           window.selectSession = selectSession;
           window.toggleThreadMode = toggleThreadMode;
@@ -4217,7 +5053,7 @@ export class DashboardWebviewPanel {
 
           function applyDeepSearchResults(query, matchedIds) {
             const input = document.getElementById('dashboardSearch');
-            const currentQuery = (input ? input.value : '').toLowerCase().trim();
+            const currentQuery = (input && input.value ? input.value : '').toLowerCase().trim();
             if (!currentQuery || query.toLowerCase().trim() !== currentQuery) {
               return;
             }
@@ -4282,7 +5118,7 @@ export class DashboardWebviewPanel {
             const input = document.getElementById('dashboardSearch');
             const badge = document.getElementById('dashboardSearchCount');
             if (!input) return;
-            const query = input.value.toLowerCase().trim();
+            const query = (input.value || '').toLowerCase().trim();
             const items = document.querySelectorAll('.session-nav-item');
             let visibleCount = 0;
             const totalCount = items.length;
@@ -5091,8 +5927,16 @@ export class DashboardWebviewPanel {
     const userPromptTotal = messages.filter((m) => m.type === 'USER_INPUT').length || activeSession.userPromptCount || activeSession.messageCount || 0;
 
     const isThread = Boolean((activeSession.childIds && activeSession.childIds.length > 0) || activeSession.parentId);
-    const threadBadge = isThread ? '<span class="meta-badge green" title="Connected Conversation Thread">🧵</span>' : '';
-    const artifactBadge = activeSession.hasArtifacts ? '<span class="meta-badge purple" title="Artifacts Available (Plan / Walkthrough)">🔖</span>' : '';
+    const totalArtifacts = activeSession.artifactCount || (activeSession.artifacts ? activeSession.artifacts.length : (activeSession.hasArtifacts ? 1 : 0));
+    const hasArtifacts = activeSession.hasArtifacts || totalArtifacts > 0;
+
+    const threadBadge = isThread
+      ? '<span class="meta-badge green" title="Connected Conversation Thread (Multi-Session Chain)"><span class="meta-icon">🧵</span> Thread</span>'
+      : '<span class="meta-badge blue" title="Single Standalone Conversation"><span class="meta-icon">💬</span> Single Chat</span>';
+
+    const artifactBadge = hasArtifacts
+      ? `<span class="meta-badge purple" onclick="openArtifactsModal()" style="cursor: pointer;" title="View all ${totalArtifacts} artifacts generated in this session (Click to open)"><span class="meta-icon">📦</span> ${totalArtifacts > 0 ? `${totalArtifacts} ` : ''}Artifacts</span>`
+      : '<span class="meta-badge" style="opacity: 0.65;" title="No artifacts generated in this session"><span class="meta-icon">📦</span> No Artifacts</span>';
     const typeBadgeDetail = `${threadBadge}${artifactBadge}`;
 
     const formattedId = activeSession.id.length > 8
@@ -5132,7 +5976,7 @@ export class DashboardWebviewPanel {
     }
 
     let artifactsHtml = '';
-    if (activeSession.hasArtifacts) {
+    if (activeSession.hasArtifacts || totalArtifacts > 0) {
       artifactsHtml = `
         <div class="artifacts-bar">
           <div class="artifacts-title">
@@ -5140,10 +5984,13 @@ export class DashboardWebviewPanel {
             <span>Session Artifacts:</span>
           </div>
           <div class="artifacts-links">
+            <button class="artifact-btn primary-artifact-btn" onclick="openArtifactsModal()" title="View all artifacts generated in this session (documents, AI images, browser videos, scratch files)">
+              <span class="artifact-icon">📦</span> All Artifacts (${totalArtifacts})
+            </button>
             ${
               activeSession.planPath
                 ? `<button class="artifact-btn" onclick="openRichPreview('${encodeURI(activeSession.planPath)}')" title="Open implementation_plan.md in Antigravity Rich Preview">
-                    <span class="artifact-icon">📋</span> Implementation Plan
+                    <span class="artifact-icon">📋</span> Plan
                   </button>`
                 : ''
             }
@@ -5158,6 +6005,18 @@ export class DashboardWebviewPanel {
         </div>
       `;
     }
+
+    const serializedArtifacts = (activeSession.artifacts || []).map((art) => ({
+      name: art.name,
+      filePath: art.filePath,
+      category: art.category,
+      source: art.source,
+      sizeBytes: art.sizeBytes,
+      mtime: art.mtime,
+      prompt: art.prompt,
+      mimeType: art.mimeType,
+      webUri: this.panel.webview.asWebviewUri(vscode.Uri.file(art.filePath)).toString()
+    }));
 
     let renderedMessages = '';
     if (isLoadingPlaceholder) {
@@ -5263,6 +6122,7 @@ export class DashboardWebviewPanel {
 
       ${threadBannerHtml}
       ${artifactsHtml}
+      <div id="artifactsDataHolder" data-artifacts="${Buffer.from(JSON.stringify(serializedArtifacts)).toString('base64')}" style="display:none;"></div>
       <div class="chat-timeline" id="chatTimeline">
         ${renderedMessages}
       </div>

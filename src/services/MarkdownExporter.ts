@@ -276,6 +276,78 @@ export class MarkdownExporter {
     return lines.join('\n');
   }
 
+  public static rewriteLocalMarkdownLinks(
+    markdown: string,
+    sessionId: string,
+    sessionPath?: string,
+    assetFileMap?: Map<string, string>
+  ): string {
+    if (!markdown) return '';
+    const shortId = sessionId ? sessionId.substring(0, 8) : 'session';
+    const normSessionPath = sessionPath ? sessionPath.replace(/\\/g, '/').toLowerCase() : '';
+    const map = assetFileMap || new Map<string, string>();
+
+    // 1. Rewrite standard markdown image links ![alt](url)
+    let result = markdown.replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, url) => {
+      const cleanUrl = url.trim().replace(/^<|>$/g, '');
+      let decodedUrl = cleanUrl;
+      try {
+        decodedUrl = decodeURIComponent(cleanUrl);
+      } catch {}
+
+      const normUrl = decodedUrl.replace(/\\/g, '/').toLowerCase();
+      const baseName = path.basename(normUrl).toLowerCase();
+
+      if (map.has(normUrl)) {
+        return `![${alt}](${map.get(normUrl)})`;
+      }
+      if (map.has(baseName)) {
+        return `![${alt}](${map.get(baseName)})`;
+      }
+
+      // If URL explicitly points to session path or contains session ID
+      if (normSessionPath && (normUrl.includes(normSessionPath) || (sessionId && normUrl.includes(sessionId.toLowerCase())))) {
+        return `![${alt}](../assets/${shortId}_${path.basename(normUrl)})`;
+      }
+
+      // If it's a file:// URL pointing to an image
+      if (/^file:\/\/\/?/i.test(decodedUrl) && /\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(baseName)) {
+        return `![${alt}](../assets/${shortId}_${path.basename(normUrl)})`;
+      }
+
+      return match;
+    });
+
+    // 2. Rewrite HTML <img> tags
+    result = result.replace(/<img\s+([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {
+      let decodedSrc = src.trim();
+      try {
+        decodedSrc = decodeURIComponent(decodedSrc);
+      } catch {}
+      const normSrc = decodedSrc.replace(/\\/g, '/').toLowerCase();
+      const baseName = path.basename(normSrc).toLowerCase();
+
+      if (map.has(normSrc)) {
+        return `<img ${before}src="${map.get(normSrc)}"${after}>`;
+      }
+      if (map.has(baseName)) {
+        return `<img ${before}src="${map.get(baseName)}"${after}>`;
+      }
+
+      if (normSessionPath && (normSrc.includes(normSessionPath) || (sessionId && normSrc.includes(sessionId.toLowerCase())))) {
+        return `<img ${before}src="../assets/${shortId}_${path.basename(normSrc)}"${after}>`;
+      }
+
+      if (/^file:\/\/\/?/i.test(decodedSrc) && /\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(baseName)) {
+        return `<img ${before}src="../assets/${shortId}_${path.basename(normSrc)}"${after}>`;
+      }
+
+      return match;
+    });
+
+    return result;
+  }
+
   private static indentMarkdown(text: string, spaces: number = 2): string {
     const indent = ' '.repeat(spaces);
     return text

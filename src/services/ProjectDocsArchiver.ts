@@ -70,11 +70,12 @@ export class ProjectDocsArchiver {
     const walkDir = path.join(docsDir, 'walkthroughs');
     const researchDir = path.join(docsDir, 'research');
     const diagramsDir = path.join(docsDir, 'diagrams');
-    const mediaDir = path.join(docsDir, 'media');
+    const assetsDir = path.join(docsDir, 'assets');
+    const mediaDir = assetsDir;
     const scratchDir = path.join(docsDir, 'scratch');
     const logsDir = path.join(docsDir, 'logs');
 
-    const baseDirs = [docsDir, plansDir, walkDir, researchDir, diagramsDir, mediaDir];
+    const baseDirs = [docsDir, plansDir, walkDir, researchDir, diagramsDir, assetsDir];
     if (mode !== 'safeDocsOnly') {
       baseDirs.push(scratchDir, logsDir);
     }
@@ -111,15 +112,96 @@ export class ProjectDocsArchiver {
         .replace(/[^a-zA-Z0-9_\-\u00C0-\u024F\u1EA0-\u1EF9]/g, '_')
         .substring(0, 30);
 
-      // 1. Process Logs if not in safeDocsOnly mode
+      const assetMap = new Map<string, string>();
+      const shortId = session.id.substring(0, 8);
+
+      // 1. Copy Brain Artifacts if session directory exists
+      if (session.path && fs.existsSync(session.path)) {
+        try {
+          const artifacts = sessionData.session.artifacts && sessionData.session.artifacts.length > 0
+            ? sessionData.session.artifacts
+            : scanner.scanSessionArtifacts(session.path, sessionData.messages);
+
+          for (const art of artifacts) {
+            if (!fs.existsSync(art.filePath)) continue;
+
+            const lowerName = art.name.toLowerCase();
+            const ext = path.extname(lowerName);
+
+            let destFolder = researchDir;
+            let destFileName = `${shortId}_${art.name}`;
+            let relLink = `../research/${destFileName}`;
+
+            if (art.category === 'image' || art.category === 'video' || art.source === 'user_uploaded') {
+              destFolder = assetsDir;
+              destFileName = `${shortId}_${art.name}`;
+              relLink = `../assets/${destFileName}`;
+            } else if (['.mermaid', '.puml', '.drawio'].includes(ext)) {
+              destFolder = diagramsDir;
+              destFileName = `${shortId}_${art.name}`;
+              relLink = `../diagrams/${destFileName}`;
+            } else if (art.category === 'document') {
+              if (lowerName.includes('plan')) {
+                destFolder = plansDir;
+                destFileName = `${shortId}_${art.name}`;
+                relLink = `../plans/${destFileName}`;
+              } else if (lowerName.includes('walkthrough') || lowerName.includes('changelog') || lowerName.includes('release')) {
+                destFolder = walkDir;
+                destFileName = `${shortId}_${art.name}`;
+                relLink = `../walkthroughs/${destFileName}`;
+              } else {
+                destFolder = researchDir;
+                destFileName = `${shortId}_${art.name}`;
+                relLink = `../research/${destFileName}`;
+              }
+            } else if (art.category === 'scratch') {
+              if (mode === 'safeDocsOnly') continue;
+              destFolder = scratchDir;
+              destFileName = `${shortId}_${art.name}`;
+              relLink = `../scratch/${destFileName}`;
+            } else {
+              destFolder = researchDir;
+              destFileName = `${shortId}_${art.name}`;
+              relLink = `../research/${destFileName}`;
+            }
+
+            try {
+              const destFile = path.join(destFolder, destFileName);
+              await fs.promises.copyFile(art.filePath, destFile);
+              copiedArtifactsCount++;
+
+              // Also maintain latest un-prefixed version for active plans/walkthroughs
+              if (lowerName === 'implementation_plan.md' || lowerName === 'walkthrough.md') {
+                await fs.promises.copyFile(art.filePath, path.join(destFolder, art.name));
+              }
+
+              // Register in assetMap for markdown link rewriting
+              const normFilePath = art.filePath.replace(/\\/g, '/').toLowerCase();
+              assetMap.set(normFilePath, relLink);
+              assetMap.set(encodeURI(art.filePath).replace(/\\/g, '/').toLowerCase(), relLink);
+              assetMap.set(lowerName, relLink);
+              assetMap.set(encodeURIComponent(art.name).toLowerCase(), relLink);
+            } catch (err) {
+              console.warn(`Error copying artifact ${art.name} for session ${session.id}:`, err);
+            }
+          }
+        } catch (err) {
+          console.warn(`Error copying artifacts for session ${session.id}:`, err);
+        }
+      }
+
+      // 2. Process Logs if not in safeDocsOnly mode
       if (mode !== 'safeDocsOnly') {
         const isSanitized = mode === 'fullWithSanitization' || sanitizeSecrets;
-        const sessionMd = MarkdownExporter.generateMarkdown(
+        let sessionMd = MarkdownExporter.generateMarkdown(
           sessionData.session,
           sessionData.messages,
           isSanitized,
           customPatterns
         );
+
+        // Rewrite local image and artifact links to relative ../assets/ paths
+        sessionMd = MarkdownExporter.rewriteLocalMarkdownLinks(sessionMd, session.id, session.path, assetMap);
         latestMarkdown = sessionMd;
 
         const logFileName = `session_${dateTag}_${safeTitle}_${session.id.substring(0, 8)}.md`;
@@ -154,59 +236,6 @@ export class ProjectDocsArchiver {
         timelineRows.push(
           `| \`${dateDisplay}\` | \`${session.id.substring(0, 8)}...\` | ${goal} | \`${sessionData.messages.length}\` | \`${session.userPromptCount}\` | \`${toolCount}\` |`
         );
-      }
-
-      // 2. Copy Brain Artifacts if session directory exists
-      if (session.path && fs.existsSync(session.path)) {
-        try {
-          const files = await fs.promises.readdir(session.path, { withFileTypes: true });
-          for (const f of files) {
-            if (f.name.startsWith('.') || f.name === 'tempmediaStorage' || f.name === 'scratch') continue;
-            if (f.isFile()) {
-              const srcFile = path.join(session.path, f.name);
-              const lowerName = f.name.toLowerCase();
-              const ext = path.extname(lowerName);
-
-              let destFolder = researchDir;
-              if (lowerName.includes('plan')) {
-                destFolder = plansDir;
-              } else if (lowerName.includes('walkthrough') || lowerName.includes('changelog') || lowerName.includes('release')) {
-                destFolder = walkDir;
-              } else if (['.mermaid', '.puml', '.drawio', '.svg'].includes(ext)) {
-                destFolder = diagramsDir;
-              } else if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4'].includes(ext)) {
-                destFolder = mediaDir;
-              }
-
-              const destFile = path.join(destFolder, `${path.parse(f.name).name}_${dateTag}${ext}`);
-              await fs.promises.copyFile(srcFile, destFile);
-              copiedArtifactsCount++;
-
-              // Also maintain latest un-timestamped version for active plans/walkthroughs
-              if (lowerName === 'implementation_plan.md' || lowerName === 'walkthrough.md') {
-                await fs.promises.copyFile(srcFile, path.join(destFolder, f.name));
-              }
-            }
-          }
-
-          // Check scratch directory (Only if NOT in safeDocsOnly mode)
-          if (mode !== 'safeDocsOnly') {
-            const sessionScratch = path.join(session.path, 'scratch');
-            if (fs.existsSync(sessionScratch)) {
-              const scratchFiles = await fs.promises.readdir(sessionScratch, { withFileTypes: true });
-              for (const sf of scratchFiles) {
-                if (sf.isFile()) {
-                  const srcSf = path.join(sessionScratch, sf.name);
-                  const destSf = path.join(scratchDir, `${path.parse(sf.name).name}_${dateTag}${path.extname(sf.name)}`);
-                  await fs.promises.copyFile(srcSf, destSf);
-                  copiedArtifactsCount++;
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.warn(`Error copying artifacts for session ${session.id}:`, err);
-        }
       }
     }
 
@@ -295,7 +324,7 @@ ${timelineRows.reverse().join('\n')}
       { id: 'walkthroughs', name: '✅ Walkthroughs & Verification Logs', dir: path.join(docsDir, 'walkthroughs') },
       { id: 'research', name: '🔬 Research & Technical Analysis', dir: path.join(docsDir, 'research') },
       { id: 'diagrams', name: '📊 Architecture Diagrams & Visuals', dir: path.join(docsDir, 'diagrams') },
-      { id: 'media', name: '🖼️ UI Mockups & Visual Assets', dir: path.join(docsDir, 'media') }
+      { id: 'assets', name: '🖼️ UI Mockups & Visual Assets', dir: path.join(docsDir, 'assets') }
     ];
 
     if (mode !== 'safeDocsOnly') {

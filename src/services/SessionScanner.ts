@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
-import { ChatMessage, ChatSession, ConversationThread, ToolCallInfo } from '../models/types';
+import { ChatMessage, ChatSession, ConversationThread, ToolCallInfo, SessionArtifactItem } from '../models/types';
 
 interface CachedSessionEntry {
   session: ChatSession;
@@ -677,9 +677,7 @@ export class SessionScanner {
             }
 
             const targetFile = this.getTranscriptFilePath(sessionPath);
-            const planPath = path.join(sessionPath, 'implementation_plan.md');
-            const walkthroughPath = path.join(sessionPath, 'walkthrough.md');
-            const hasArtifacts = fs.existsSync(planPath) || fs.existsSync(walkthroughPath);
+            const hasArtifacts = this.hasAnyArtifacts(sessionPath);
 
             if (!targetFile && !hasArtifacts) {
               emptyDirs.push({ id: entry.name, path: sessionPath });
@@ -1065,14 +1063,16 @@ export class SessionScanner {
     const hasPlan = fs.existsSync(planPath);
     const hasWalkthrough = fs.existsSync(walkthroughPath);
 
+    const artifacts = this.scanSessionArtifacts(sessionPath, parsed.messages);
+    const hasArtifacts = hasPlan || hasWalkthrough || artifacts.length > 0;
+
     const title = parsed.firstPrompt ? this.generateSessionTitle(parsed.firstPrompt) : `Session ${sessionId.substring(0, 8)}`;
     const finalMachineName = parsed.detectedMachine || this.getLocalMachineName();
     const messageCount = parsed.userPromptCount || (parsed.messages && parsed.messages.length > 0 ? parsed.messages.length : 0);
     const isEmpty =
       messageCount === 0 &&
       parsed.userPromptCount === 0 &&
-      !hasPlan &&
-      !hasWalkthrough &&
+      !hasArtifacts &&
       (!parsed.firstPrompt || parsed.firstPrompt === '(No user prompt recorded)');
 
     let runtime: 'IDE' | 'CLI' | 'Desktop' | 'Custom' = 'IDE';
@@ -1105,9 +1105,11 @@ export class SessionScanner {
       workspaceName: parsed.detectedWorkspace ? path.basename(parsed.detectedWorkspace) : undefined,
       workspacePath: parsed.detectedWorkspace,
       machineName: finalMachineName,
-      hasArtifacts: hasPlan || hasWalkthrough,
+      hasArtifacts,
       planPath: hasPlan ? planPath : undefined,
       walkthroughPath: hasWalkthrough ? walkthroughPath : undefined,
+      artifacts,
+      artifactCount: artifacts.length,
       parentId: parsed.detectedParentId,
       isEmpty,
       runtime
@@ -1360,6 +1362,13 @@ export class SessionScanner {
 
     this.attachUserMedia(sessionPath, parsed.messages);
 
+    const artifacts = this.scanSessionArtifacts(sessionPath, parsed.messages);
+    session.artifacts = artifacts;
+    session.artifactCount = artifacts.length;
+    if (artifacts.length > 0) {
+      session.hasArtifacts = true;
+    }
+
     this.sessionCache.set(cacheKey, {
       session,
       mtime: foundStats.mtimeMs,
@@ -1370,6 +1379,186 @@ export class SessionScanner {
     this.saveCacheToDiskDebounced(500);
 
     return { session, messages: parsed.messages };
+  }
+
+  public hasAnyArtifacts(sessionPath: string): boolean {
+    const planPath = path.join(sessionPath, 'implementation_plan.md');
+    const walkthroughPath = path.join(sessionPath, 'walkthrough.md');
+    if (fs.existsSync(planPath) || fs.existsSync(walkthroughPath)) {
+      return true;
+    }
+    try {
+      const entries = fs.readdirSync(sessionPath);
+      const mediaExts = ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif', '.mp4'];
+      for (const e of entries) {
+        if (e.startsWith('.system_generated') || e === '.git' || e === 'metadata.json') continue;
+        if (e.endsWith('.md')) return true;
+        const lower = e.toLowerCase();
+        if (mediaExts.some((ext) => lower.endsWith(ext))) return true;
+        if (['.user_uploaded', '.tempmediaStorage', 'tempmediaStorage', 'artifacts', 'scratch'].includes(e)) {
+          const sub = path.join(sessionPath, e);
+          if (fs.existsSync(sub) && fs.readdirSync(sub).length > 0) return true;
+        }
+      }
+    } catch {}
+    return false;
+  }
+
+  public scanSessionArtifacts(sessionPath: string, messages?: ChatMessage[]): SessionArtifactItem[] {
+    const artifacts: SessionArtifactItem[] = [];
+    if (!sessionPath || !fs.existsSync(sessionPath)) {
+      return artifacts;
+    }
+
+    const promptMap = new Map<string, string>();
+    if (messages && Array.isArray(messages)) {
+      for (const msg of messages) {
+        if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
+          for (const tc of msg.toolCalls) {
+            if (tc.name === 'generate_image' && tc.args) {
+              const argsObj = typeof tc.args === 'string' ? (() => { try { return JSON.parse(tc.args); } catch { return {}; } })() : tc.args;
+              const imgName = argsObj.ImageName || argsObj.imageName || argsObj.name;
+              const prompt = argsObj.Prompt || argsObj.prompt;
+              if (imgName && prompt) {
+                promptMap.set(String(imgName).toLowerCase(), String(prompt));
+              }
+            } else if (tc.name === 'browser_subagent' && tc.args) {
+              const argsObj = typeof tc.args === 'string' ? (() => { try { return JSON.parse(tc.args); } catch { return {}; } })() : tc.args;
+              const recName = argsObj.RecordingName || argsObj.recordingName;
+              const taskSummary = argsObj.TaskSummary || argsObj.Task || argsObj.task;
+              if (recName && taskSummary) {
+                promptMap.set(String(recName).toLowerCase(), String(taskSummary));
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const imageExts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif', '.bmp', '.ico']);
+    const videoExts = new Set(['.mp4', '.webm', '.mov', '.mkv']);
+    const docExts = new Set(['.md', '.txt', '.json', '.yaml', '.yml', '.csv', '.pdf']);
+
+    const getMime = (ext: string): string => {
+      switch (ext) {
+        case '.png': return 'image/png';
+        case '.jpg':
+        case '.jpeg': return 'image/jpeg';
+        case '.webp': return 'image/webp';
+        case '.svg': return 'image/svg+xml';
+        case '.gif': return 'image/gif';
+        case '.mp4': return 'video/mp4';
+        case '.webm': return 'video/webm';
+        case '.md': return 'text/markdown';
+        case '.json': return 'application/json';
+        case '.txt': return 'text/plain';
+        default: return 'application/octet-stream';
+      }
+    };
+
+    const processFile = (filePath: string, filename: string, defaultSource: SessionArtifactItem['source']) => {
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) return;
+
+        const ext = path.extname(filename).toLowerCase();
+        const baseNoExt = path.basename(filename, ext).toLowerCase();
+        let category: SessionArtifactItem['category'] = 'other';
+        let source: SessionArtifactItem['source'] = defaultSource;
+
+        if (imageExts.has(ext)) {
+          if (ext === '.webp' && (filename.toLowerCase().includes('recording') || filename.toLowerCase().includes('browser') || promptMap.has(baseNoExt))) {
+            category = 'video';
+          } else {
+            category = 'image';
+          }
+        } else if (videoExts.has(ext)) {
+          category = 'video';
+        } else if (docExts.has(ext)) {
+          category = 'document';
+          if (filename.toLowerCase() === 'implementation_plan.md') {
+            source = 'plan';
+          } else if (filename.toLowerCase() === 'walkthrough.md') {
+            source = 'walkthrough';
+          }
+        } else if (defaultSource === 'scratch') {
+          category = 'scratch';
+        }
+
+        let prompt = promptMap.get(baseNoExt);
+        if (!prompt) {
+          for (const [key, val] of promptMap.entries()) {
+            if (baseNoExt.includes(key) || key.includes(baseNoExt)) {
+              prompt = val;
+              break;
+            }
+          }
+        }
+
+        artifacts.push({
+          name: filename,
+          filePath,
+          category,
+          source,
+          sizeBytes: stat.size,
+          mtime: stat.mtime,
+          prompt,
+          mimeType: getMime(ext)
+        });
+      } catch {}
+    };
+
+    try {
+      const rootEntries = fs.readdirSync(sessionPath, { withFileTypes: true });
+      for (const entry of rootEntries) {
+        if (entry.name.startsWith('.system_generated') || entry.name === '.git' || entry.name === 'node_modules') {
+          continue;
+        }
+        if (entry.isFile()) {
+          if (entry.name === 'metadata.json') continue;
+          processFile(path.join(sessionPath, entry.name), entry.name, 'ai_generated');
+        }
+      }
+    } catch {}
+
+    const subDirs: { relPath: string; source: SessionArtifactItem['source'] }[] = [
+      { relPath: '.user_uploaded', source: 'user_uploaded' },
+      { relPath: '.tempmediaStorage', source: 'user_uploaded' },
+      { relPath: 'tempmediaStorage', source: 'user_uploaded' },
+      { relPath: 'artifacts', source: 'ai_generated' },
+      { relPath: 'scratch', source: 'scratch' }
+    ];
+
+    for (const sub of subDirs) {
+      const fullSubPath = path.join(sessionPath, sub.relPath);
+      if (fs.existsSync(fullSubPath)) {
+        try {
+          const entries = fs.readdirSync(fullSubPath, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isFile()) {
+              processFile(path.join(fullSubPath, entry.name), entry.name, sub.source);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const categoryWeight: Record<string, number> = {
+      document: 1,
+      image: 2,
+      video: 3,
+      scratch: 4,
+      other: 5
+    };
+
+    artifacts.sort((a, b) => {
+      const wa = categoryWeight[a.category] || 99;
+      const wb = categoryWeight[b.category] || 99;
+      if (wa !== wb) return wa - wb;
+      return b.mtime.getTime() - a.mtime.getTime();
+    });
+
+    return artifacts;
   }
 
   public attachUserMedia(sessionPath: string, messages: ChatMessage[]): void {

@@ -273,7 +273,12 @@ export class SessionTreeItem extends vscode.TreeItem {
     super(session.title, vscode.TreeItemCollapsibleState.None);
 
     const isThread = Boolean((session.childIds && session.childIds.length > 0) || session.parentId);
-    const typeIconStr = `${isThread ? '🧵 ' : ''}${session.hasArtifacts ? '🔖 ' : ''}`;
+    const totalArtifacts = session.artifactCount || (session.artifacts ? session.artifacts.length : (session.hasArtifacts ? 1 : 0));
+    const hasArtifacts = Boolean(session.hasArtifacts || totalArtifacts > 0);
+
+    const threadPrefix = isThread ? '🧵 ' : '💬 ';
+    const artifactPrefix = hasArtifacts ? `📦${totalArtifacts > 0 ? totalArtifacts : ''} ` : '';
+    const typeIconStr = `${threadPrefix}${artifactPrefix}`;
     const cDate = session.createdAt || session.lastModified;
     const lDate = session.lastModified || session.createdAt;
     const cTimeStr = this.formatRelativeTime(cDate);
@@ -292,6 +297,11 @@ export class SessionTreeItem extends vscode.TreeItem {
     const md = new vscode.MarkdownString();
     md.appendMarkdown(`### ${session.title}\n\n`);
     md.appendMarkdown(`- **Session ID**: \`${session.id}\`\n`);
+    if (isThread) {
+      md.appendMarkdown(`- **🧵 Type**: Connected Conversation Thread\n`);
+    } else {
+      md.appendMarkdown(`- **💬 Type**: Single Conversation Chat\n`);
+    }
     if (session.machineName) {
       md.appendMarkdown(`- **💻 PC Name**: \`${session.machineName}\`\n`);
     }
@@ -311,18 +321,29 @@ export class SessionTreeItem extends vscode.TreeItem {
     if (session.childIds && session.childIds.length > 0) {
       md.appendMarkdown(`- **🧵 Continued in**: ${session.childIds.length} subsequent sessions\n`);
     }
-    if (session.hasArtifacts) {
-      md.appendMarkdown(`- **Artifacts**: ${session.planPath ? '📋 Plan ' : ''}${session.walkthroughPath ? '✅ Walkthrough' : ''}\n`);
+    if (hasArtifacts) {
+      md.appendMarkdown(`- **📦 Artifacts**: ${totalArtifacts} item(s) (${session.planPath ? '📋 Plan ' : ''}${session.walkthroughPath ? '✅ Walkthrough' : ''})\n`);
+    } else {
+      md.appendMarkdown(`- **📦 Artifacts**: None\n`);
     }
-    md.appendMarkdown(`\n---\n\n*${session.firstPrompt.substring(0, 300)}${session.firstPrompt.length > 300 ? '...' : ''}*`);
+    const promptPreview = session.firstPrompt
+      ? `${session.firstPrompt.substring(0, 300)}${session.firstPrompt.length > 300 ? '...' : ''}`
+      : '';
+    if (promptPreview) {
+      md.appendMarkdown(`\n---\n\n*${promptPreview}*`);
+    }
     this.tooltip = md;
 
-    if (session.hasArtifacts) {
-      this.iconPath = new vscode.ThemeIcon('bookmark', new vscode.ThemeColor('charts.purple'));
-    } else if (session.parentId || (session.childIds && session.childIds.length > 0)) {
-      this.iconPath = new vscode.ThemeIcon('git-commit', new vscode.ThemeColor('charts.green'));
+    if (isThread) {
+      this.iconPath = new vscode.ThemeIcon(
+        'git-commit',
+        new vscode.ThemeColor(hasArtifacts ? 'charts.purple' : 'charts.green')
+      );
     } else {
-      this.iconPath = new vscode.ThemeIcon('comment-discussion', new vscode.ThemeColor('charts.blue'));
+      this.iconPath = new vscode.ThemeIcon(
+        'comment-discussion',
+        new vscode.ThemeColor(hasArtifacts ? 'charts.purple' : 'charts.blue')
+      );
     }
 
     this.command = {

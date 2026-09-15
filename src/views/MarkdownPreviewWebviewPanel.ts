@@ -1299,11 +1299,39 @@ export class MarkdownPreviewWebviewPanel {
             overflow: visible !important;
           }
 
-          .mermaid-body svg .node foreignObject > div,
-          .mermaid-body svg .edgeLabel foreignObject > div {
+          .mermaid-body svg .node foreignObject > div {
             padding: 4px 8px !important;
             line-height: 1.4 !important;
             box-sizing: border-box;
+          }
+
+          .mermaid-body svg .edgeLabel foreignObject > div {
+            padding: 2px 6px !important;
+            line-height: 1.3 !important;
+            border-radius: 4px;
+            box-sizing: border-box;
+          }
+
+          .mermaid-body svg .cluster rect {
+            stroke-dasharray: 4 4;
+            stroke-width: 1.5px !important;
+            rx: 8px !important;
+            ry: 8px !important;
+          }
+
+          .mermaid-body svg .cluster .label,
+          .mermaid-body svg .cluster span.nodeLabel,
+          .mermaid-body svg .cluster .cluster-label {
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            letter-spacing: 0.3px;
+          }
+
+          .mermaid-body svg .node rect,
+          .mermaid-body svg .node polygon,
+          .mermaid-body svg .node circle {
+            rx: 6px !important;
+            ry: 6px !important;
           }
 
           /* Mode allowing natural 100% width with horizontal scroll for wide diagrams */
@@ -2414,9 +2442,38 @@ export class MarkdownPreviewWebviewPanel {
                   useMaxWidth: true,
                   htmlLabels: true,
                   curve: 'basis',
-                  nodeSpacing: 35,
-                  rankSpacing: 35,
-                  padding: 16
+                  nodeSpacing: 50,
+                  rankSpacing: 55,
+                  padding: 20,
+                  subGraphTitleMargin: {
+                    top: 16,
+                    bottom: 16
+                  }
+                },
+                themeVariables: isLight ? {
+                  fontFamily: 'var(--font-family)',
+                  primaryColor: '#e0f2fe',
+                  primaryTextColor: '#0369a1',
+                  primaryBorderColor: '#7dd3fc',
+                  lineColor: '#64748b',
+                  secondaryColor: '#f1f5f9',
+                  tertiaryColor: '#ffffff',
+                  clusterBkg: 'rgba(241, 245, 249, 0.65)',
+                  clusterBorder: '#cbd5e1',
+                  edgeLabelBackground: 'rgba(255, 255, 255, 0.95)',
+                  nodeBorder: '#94a3b8'
+                } : {
+                  fontFamily: 'var(--font-family)',
+                  primaryColor: '#1e293b',
+                  primaryTextColor: '#e2e8f0',
+                  primaryBorderColor: '#475569',
+                  lineColor: '#94a3b8',
+                  secondaryColor: '#0f172a',
+                  tertiaryColor: '#1e293b',
+                  clusterBkg: 'rgba(30, 41, 59, 0.45)',
+                  clusterBorder: '#475569',
+                  edgeLabelBackground: 'rgba(15, 23, 42, 0.95)',
+                  nodeBorder: '#475569'
                 }
               });
             } catch (initErr) {

@@ -90,13 +90,17 @@ if (isDryRun) {
   process.exit(0);
 }
 
-// 4. Resolve Parent Commit
-let parentSha = getSafeRef(`refs/heads/${targetBranch}`);
-let parentDesc = `local branch '${targetBranch}'`;
+// 4. Fetch latest release remote & Resolve Parent Commit
+try {
+  execSync('git fetch release', { cwd: rootDir, stdio: 'ignore' });
+} catch {}
+
+let parentSha = getSafeRef('refs/remotes/release/main');
+let parentDesc = `remote 'release/main'`;
 
 if (!parentSha) {
-  parentSha = getSafeRef('refs/remotes/release/main');
-  parentDesc = `remote 'release/main'`;
+  parentSha = getSafeRef(`refs/heads/${targetBranch}`);
+  parentDesc = `local branch '${targetBranch}'`;
 }
 
 if (!parentSha) {

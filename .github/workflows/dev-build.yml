@@ -1,0 +1,69 @@
+name: Development Rolling Build
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    name: Build & Publish Dev VSIX
+    if: github.repository == 'hungle-vn/brain-hub-antigravity'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile TypeScript
+        run: npm run compile
+
+      - name: Bundle extension with esbuild
+        run: npm run build
+
+      - name: Package VSIX
+        run: npx @vscode/vsce package --no-dependencies
+
+      - name: Prepare Rolling Asset
+        run: |
+          ORIGINAL_VSIX=$(ls *.vsix | head -n 1)
+          echo "Original package: $ORIGINAL_VSIX"
+          cp "$ORIGINAL_VSIX" brain-hub-antigravity-dev-latest.vsix
+
+      - name: Publish Rolling Dev Pre-Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="dev-latest"
+          VERSION=$(node -p "require('./package.json').version")
+
+          # Delete existing release and tag if already present to guarantee zero asset accumulation
+          gh release delete "$TAG" --yes --cleanup-tag || true
+
+          # Create fresh pre-release with the latest VSIX asset
+          gh release create "$TAG" brain-hub-antigravity-dev-latest.vsix \
+            --title "Brain Hub Dev Build (v${VERSION})" \
+            --notes "Automated rolling development build for multi-machine synchronization.
+
+          - **Version**: `v${VERSION}`
+          - **Source Commit**: `${{ github.sha }}`
+          - **Source Branch**: `${{ github.ref_name }}`
+          - **Triggered by**: `${{ github.actor }}`
+
+          Download **`brain-hub-antigravity-dev-latest.vsix`** below to install manually without rebuilding." \
+            --prerelease

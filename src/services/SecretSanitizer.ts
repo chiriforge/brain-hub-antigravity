@@ -80,7 +80,7 @@ export class SecretSanitizer {
     // Database Connection Strings with Credentials (e.g. postgres://user:password@host:5432/db)
     {
       name: 'Database URI Credentials',
-      regex: /\b((?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|couchdb|amqp):\/\/)([^:\s\/]+):([^\s\/@]+(?:%40|[^\s\/@])*)@([^\s\/]+)/gi,
+      regex: /\b((?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|couchdb|amqp):\/\/)([^:\s\/]+):([^:\s\/@]+)@([^\s\/]+)/gi,
       replace: '$1[USER]:[REDACTED_PASSWORD]@$4'
     },
     // CLI Flags & Key-Value Pairs with Passwords / Secrets

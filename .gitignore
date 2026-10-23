@@ -9,5 +9,24 @@ sessions_index_cache.json
 scratch/
 *.log
 .env*
+!.env.example
 .docs/
 .dcignore
+
+# --- Conductor Security Hardening ---
+.env
+.env.local
+.env.*.local
+*.env
+*.pem
+*.key
+*.pfx
+*.pkcs12
+*.cer
+*.crt
+credentials.json
+service-account*.json
+google-services.json
+id_rsa*
+token.json
+# ------------------------------------

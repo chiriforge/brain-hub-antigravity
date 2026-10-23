@@ -10,6 +10,9 @@ async function build() {
     platform: 'node',
     outfile: 'dist/extension.js',
     external: ['vscode'],
+    alias: {
+      'beautiful-mermaid': './node_modules/beautiful-mermaid/dist/index.js'
+    },
     sourcemap: true,
     minify: !isWatch,
     logLevel: 'info'

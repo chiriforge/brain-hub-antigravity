@@ -10,6 +10,20 @@ import { GitSyncService } from './services/GitSyncService';
 import { ChatSession } from './models/types';
 import { MarkdownPreviewWebviewPanel } from './views/MarkdownPreviewWebviewPanel';
 
+export function getAppConfig<T>(key: string, defaultValue: T): T {
+  const config = vscode.workspace.getConfiguration('brainHub');
+  const inspect = config.inspect<T>(key);
+  if (inspect && (inspect.globalValue !== undefined || inspect.workspaceValue !== undefined || inspect.workspaceFolderValue !== undefined)) {
+    return config.get<T>(key, defaultValue);
+  }
+  const legacyConfig = vscode.workspace.getConfiguration('antigravityHistory');
+  const legacyInspect = legacyConfig.inspect<T>(key);
+  if (legacyInspect && (legacyInspect.globalValue !== undefined || legacyInspect.workspaceValue !== undefined || legacyInspect.workspaceFolderValue !== undefined)) {
+    return legacyConfig.get<T>(key, defaultValue);
+  }
+  return config.get<T>(key, defaultValue);
+}
+
 let statusBarItem: vscode.StatusBarItem;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -30,11 +44,14 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(treeView);
 
   // Auto open full-page Dashboard whenever user clicks the Antigravity icon on Activity Bar
+  let startupSettled = false;
+  setTimeout(() => {
+    startupSettled = true;
+  }, 1000);
+
   treeView.onDidChangeVisibility((e) => {
-    if (e.visible) {
-      const autoOpen = vscode.workspace
-        .getConfiguration('brainHub')
-        .get<boolean>('autoOpenDashboardOnSidebarFocus', true);
+    if (e.visible && startupSettled) {
+      const autoOpen = getAppConfig<boolean>('autoOpenDashboardOnSidebarFocus', true);
       if (autoOpen) {
         vscode.commands.executeCommand('brainHub.openDashboard');
       }
@@ -103,35 +120,29 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   // 4. Background Startup Execution, Auto-Scan & Auto-Sync
-  const autoSyncOnStartup = vscode.workspace
-    .getConfiguration('brainHub')
-    .get<boolean>('autoSyncOnStartup', true);
+  const autoSyncOnStartup = getAppConfig<boolean>('autoSyncOnStartup', true);
+  const autoSyncIntervalMinutes = getAppConfig<number>('autoSyncIntervalMinutes', 30);
+  const backgroundScanIntervalMinutes = getAppConfig<number>('backgroundScanIntervalMinutes', 5);
+  const enableRealtimeWatcher = getAppConfig<boolean>('enableRealtimeWatcher', true);
 
-  const autoSyncIntervalMinutes = vscode.workspace
-    .getConfiguration('brainHub')
-    .get<number>('autoSyncIntervalMinutes', 30);
-
-  const backgroundScanIntervalMinutes = vscode.workspace
-    .getConfiguration('brainHub')
-    .get<number>('backgroundScanIntervalMinutes', 5);
-
-  const enableRealtimeWatcher = vscode.workspace
-    .getConfiguration('brainHub')
-    .get<boolean>('enableRealtimeWatcher', true);
-
-  // Pre-scan in background to warm up memory cache after UI has stabilized
+  // Background startup: pull remote sessions first, then scan local cache
   setTimeout(async () => {
+    if (autoSyncOnStartup) {
+      statusBarItem.text = '$(sync~spin) Brain Hub Syncing...';
+      try {
+        await gitSync.syncSilently(5);
+      } catch (err) {
+        console.warn('Startup background git sync error:', err);
+      } finally {
+        statusBarItem.text = '$(github) Brain Hub Sync';
+        updateStatusBar();
+      }
+    }
+
     const prevCount = scanner.getCachedSessions().length;
     const fresh = await scanner.scanSessions();
     if (fresh.length !== prevCount) {
       onSessionsDataChanged();
-    }
-
-    if (autoSyncOnStartup) {
-      statusBarItem.text = '$(sync~spin) Brain Hub Syncing...';
-      const success = await gitSync.syncSilently(5);
-      statusBarItem.text = '$(github) Brain Hub Sync';
-      updateStatusBar();
     }
   }, 5000);
 
@@ -154,9 +165,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState(async (state) => {
       if (state.focused) {
-        const autoRefreshOnFocus = vscode.workspace
-          .getConfiguration('brainHub')
-          .get<boolean>('autoRefreshOnWindowFocus', true);
+        const autoRefreshOnFocus = getAppConfig<boolean>('autoRefreshOnWindowFocus', true);
         if (autoRefreshOnFocus) {
           await scanner.scanSessions(false);
           onSessionsDataChanged();
@@ -635,4 +644,6 @@ export function deactivate() {
   GitSyncService.getInstance().stopAutoSyncTimer();
   SessionScanner.getInstance().stopRealtimeWatcher();
   SessionScanner.getInstance().stopBackgroundScanTimer();
+  SessionScanner.getInstance().saveCacheToDisk();
+  SessionScanner.getInstance().releaseScanLock();
 }

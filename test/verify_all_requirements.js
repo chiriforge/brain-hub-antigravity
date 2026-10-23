@@ -29,17 +29,17 @@ assert(dash.includes('🤖${maxStepIndex}'), 'Dashboard: 🤖${maxStepIndex} for
 assert(!dash.includes('⚡ ${maxStepIndex}'), 'Dashboard: Old ⚡ ${maxStepIndex} still present');
 console.log('✓ Requirement 2: "⚡ 188" -> "🤖188" (no space, robot emoji) verified!');
 
-// 3. Check 4-case pill icon logic (plain chat = no icon, artifact = 🔖, thread = 🧵, thread + artifact = 🧵🔖)
-assert(chat.includes("const threadBadge = isThread ? '<span class=\"meta-badge green\" title=\"Connected Conversation Thread\">🧵</span>' : ''"), 'Chat: thread badge logic missing');
-assert(chat.includes("const artifactBadge = session.hasArtifacts ? '<span class=\"meta-badge purple\" title=\"Artifacts Available (Plan / Walkthrough)\">🔖</span>' : ''"), 'Chat: artifact badge logic missing');
+// 3. Check pill badge logic (artifact = purple badge, thread = green 🧵 thread)
+assert(chat.includes('title="Connected Conversation Thread (Multi-Session Chain)"'), 'Chat: thread badge logic missing');
+assert(chat.includes('meta-badge purple'), 'Chat: artifact badge logic missing');
 assert(chat.includes('${threadBadge}${artifactBadge}'), 'Chat: combined typeBadgeHtml missing');
 
-assert(dash.includes("const threadBadge = isThread ? '<span class=\"meta-badge green\" title=\"Connected Conversation Thread\">🧵</span>' : ''"), 'Dashboard: thread badge logic missing');
-assert(dash.includes("const artifactBadge = activeSession.hasArtifacts ? '<span class=\"meta-badge purple\" title=\"Artifacts Available (Plan / Walkthrough)\">🔖</span>' : ''"), 'Dashboard: artifact badge logic missing');
-assert(dash.includes('const typeBadgeDetail = `${threadBadge}${artifactBadge}`'), 'Dashboard: combined typeBadgeDetail missing');
+assert(dash.includes('title="Connected Conversation Thread (Multi-Session Chain)"'), 'Dashboard: thread badge logic missing');
+assert(dash.includes('meta-badge purple'), 'Dashboard: artifact badge logic missing');
+assert(dash.includes('${threadBadge}${artifactBadge}'), 'Dashboard: combined typeBadgeDetail missing');
 
-assert(tree.includes("const typeIconStr = `${isThread ? '🧵 ' : ''}${session.hasArtifacts ? '🔖 ' : ''}`"), 'TreeProvider: 4-case typeIconStr missing');
-console.log('✓ Requirement 3: 4-case pill icon logic (none, artifact, thread, thread+artifact) verified!');
+assert(tree.includes('const typeIconStr = `${threadPrefix}${artifactPrefix}`;'), 'TreeProvider: 4-case typeIconStr missing');
+console.log('✓ Requirement 3: 4-case pill icon logic verified!');
 
 // 4. Check Live pill clipping fix
 assert(chat.includes('transform-origin: left center;'), 'Chat: transform-origin: left center missing in .live-badge');

@@ -20,3 +20,11 @@
 - Always enclose Subgraph display names in brackets with double quotes: `subgraph ID ["Title"]`.
 - Always enclose Node labels containing control characters (`:`, `&`, `->`, `/`, etc.) in double quotes: `Node["Content"]`.
 - Use standard ASCII whitespace; do not use tabs or non-standard whitespace characters.
+
+## 4. Workflow & Math Formatting Standards
+- **Strictly No LaTeX for Software Workflows**: Forbidden to use LaTeX math blocks (`$` or `$$`) to represent software pipelines, command flows, state transitions, or tool sequences.
+- **Mandatory Inline Code or Mermaid**:
+  - For linear single-line workflows, always use inline code with arrows: `` `A` ──(auto)──> `B` `` or `` `A` → `B` ``.
+  - For complex branching workflows, always use Mermaid diagrams (`flowchart LR` / `flowchart TD`) with double-quoted node and edge labels.
+- **Strict Escaping in Mathematical LaTeX**: LaTeX math blocks are reserved strictly for genuine mathematical formulas and quantitative equations. All reserved characters (`&`, `_`, `%`, `#`, `{`, `}`) used inside LaTeX must be properly escaped (e.g. `\&`, `\_`, `\%`).
+

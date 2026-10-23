@@ -4,6 +4,7 @@ import { marked } from 'marked';
 import markedKatex from 'marked-katex-extension';
 import hljs from 'highlight.js';
 import { MermaidSanitizer } from './MermaidSanitizer';
+import { KaTeXSanitizer } from './KaTeXSanitizer';
 
 export class MarkdownRenderer {
   private static isInitialized: boolean = false;
@@ -259,11 +260,18 @@ export class MarkdownRenderer {
         gfm: true,
         breaks: true,
         renderer: {
-          heading({ tokens, depth, text }: { tokens?: any[]; depth: number; text: string }) {
-            const plainText = text.replace(/<[^>]+>/g, '').trim();
+          heading(this: any, { tokens, depth, text }: { tokens?: any[]; depth: number; text: string }) {
+            let plainText = text;
+            let prevText: string;
+            do {
+              prevText = plainText;
+              plainText = plainText.replace(/<[^>]*>/g, '');
+            } while (plainText !== prevText);
+            plainText = plainText.trim();
             const slug = plainText.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-');
             const idAttr = slug ? ` id="${slug}"` : '';
-            return `<h${depth}${idAttr}>${text}</h${depth}>\n`;
+            const content = tokens && this?.parser?.parseInline ? this.parser.parseInline(tokens) : text;
+            return `<h${depth}${idAttr}>${content}</h${depth}>\n`;
           },
           code({ text, lang }: { text: string; lang?: string }) {
             const language = (lang || 'plaintext').trim().toLowerCase();
@@ -272,10 +280,16 @@ export class MarkdownRenderer {
 
             if (language === 'mermaid' && MermaidSanitizer.isDiagram(text)) {
               const escapedCode = MarkdownRenderer.escapeHtml(text);
-              const sanitizedCode = MermaidSanitizer.sanitize(text);
+              const sanitizedCode = MermaidSanitizer.applySmartWordWrap(
+                MermaidSanitizer.sanitize(MermaidSanitizer.preprocessAntigravitySyntax(text)),
+                32,
+                26
+              );
               const sanitizedCodeEncoded = encodeURIComponent(sanitizedCode);
+              const beautifulSvg = MermaidSanitizer.renderBeautifulMermaid(text);
+              const beautifulSvgAttr = beautifulSvg ? ` data-beautiful-svg="${encodeURIComponent(beautifulSvg)}"` : '';
               return `
-                <div class="mermaid-container" data-mermaid="${rawCodeEncoded}" data-sanitized="${sanitizedCodeEncoded}">
+                <div class="mermaid-container" data-mermaid="${rawCodeEncoded}" data-sanitized="${sanitizedCodeEncoded}"${beautifulSvgAttr}>
                   <div class="code-container" data-language="mermaid">
                     <div class="code-header">
                       <span class="code-lang-badge">MERMAID</span>
@@ -380,6 +394,494 @@ export class MarkdownRenderer {
     return clean.endsWith('.md') || clean.endsWith('.markdown');
   }
 
+  private static readonly SHELL_VAR_REGEX = /\$(?:\{[A-Za-z_]\w*\}|[A-Z_][A-Z0-9_]+(?!\w))/y;
+  private static readonly CONTAINER_PREFIX_REGEX = /^\s*(?:>\s*|(?:[-+*]|\d+[.)])\s+)*/;
+  private static readonly LIST_MARKER_LINE_REGEX = /^\s*(?:(?:[-+*]|\d+[.)])\s+)+/;
+
+  private static matchShellVarLength(text: string, pos: number): number {
+    MarkdownRenderer.SHELL_VAR_REGEX.lastIndex = pos;
+    return MarkdownRenderer.SHELL_VAR_REGEX.exec(text)?.[0].length ?? 0;
+  }
+
+  private static countBlockquoteDepth(prefix: string): number {
+    let depth = 0;
+    for (let i = 0; i < prefix.length; i++) {
+      if (prefix[i] === '>') depth++;
+    }
+    return depth;
+  }
+
+  private static getFencePrefixInfo(prefix: string): { blockquoteDepth: number; indent: number } {
+    const blockquoteDepth = MarkdownRenderer.countBlockquoteDepth(prefix);
+    const lastGt = prefix.lastIndexOf('>');
+    if (lastGt === -1) {
+      return { blockquoteDepth: 0, indent: prefix.length };
+    }
+    const after = prefix.slice(lastGt + 1);
+    const indent = after.startsWith(' ') || after.startsWith('\t') ? after.length - 1 : after.length;
+    return { blockquoteDepth, indent };
+  }
+
+  private static splitContainerPrefix(line: string, maxQuoteDepth: number | null = null): {
+    containerPrefix: string;
+    continuationPrefix: string;
+    rest: string;
+  } {
+    const regex = maxQuoteDepth === null
+      ? MarkdownRenderer.CONTAINER_PREFIX_REGEX
+      : new RegExp(`^\\s*(?:>\\s*){0,${maxQuoteDepth}}`);
+    const containerPrefix = line.match(regex)?.[0] ?? '';
+    const continuationPrefix = containerPrefix.replace(/[-+*]|\d+[.)]/g, (m) => ' '.repeat(m.length));
+    return {
+      containerPrefix,
+      continuationPrefix,
+      rest: line.slice(containerPrefix.length)
+    };
+  }
+
+  private static countDisplayMathDelimitersOnLine(line: string): number {
+    let count = 0;
+    const segments = line.split(/(`[^`]*`)/);
+    for (let i = 0; i < segments.length; i += 2) {
+      const cleaned = segments[i]
+        .replace(/(?<!\\)\\\$/g, '__')
+        .replace(/(?<!\\)\\[[\]]/g, () => '$$');
+      count += [...cleaned.matchAll(/\$\$+/g)].length;
+    }
+    return count;
+  }
+
+  private static hasClosingDisplayMathAhead(lines: string[], startIndex: number): boolean {
+    let count = 0;
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i];
+      if (
+        /^\s*$/.test(line) ||
+        /^\s*(?:```|#{1,6}\s|>)/.test(line) ||
+        MarkdownRenderer.LIST_MARKER_LINE_REGEX.test(line)
+      ) {
+        break;
+      }
+      if (MarkdownRenderer.countDisplayMathDelimitersOnLine(line) === 1) {
+        count++;
+      }
+    }
+    return count % 2 === 1;
+  }
+
+  private static ensureMinimumIndent(line: string, minIndent: string): string {
+    const leadingWhitespace = line.match(/^\s*/)?.[0] ?? '';
+    if (!/\S/.test(line) || leadingWhitespace.length >= minIndent.length) {
+      return line;
+    }
+    return minIndent + line.slice(leadingWhitespace.length);
+  }
+
+  private static normalizeDisplayMathLine(
+    line: string,
+    mathBlockquoteDepth: number | null,
+    allowInlineSplit: boolean = false
+  ): { lines: string[]; mathBlockquoteDepth: number | null } {
+    if (!line.includes('$$')) {
+      return { lines: [line], mathBlockquoteDepth };
+    }
+    const { containerPrefix, continuationPrefix, rest } = MarkdownRenderer.splitContainerPrefix(line, mathBlockquoteDepth);
+    const segments = rest.split(/(`[^`]*`)/);
+
+    let matchSegIdx = -1;
+    let singleMatch: RegExpExecArray | null = null;
+    for (let i = 0; i < segments.length; i += 2) {
+      const matches = [...segments[i].replace(/(?<!\\)\\\$/g, '__').matchAll(/\$\$+/g)];
+      if (matches.length > 1 || (matches.length === 1 && singleMatch !== null)) {
+        return { lines: [line], mathBlockquoteDepth };
+      }
+      if (matches.length === 1) {
+        matchSegIdx = i;
+        singleMatch = matches[0];
+      }
+    }
+
+    if (!singleMatch || singleMatch.index === undefined) {
+      return { lines: [line], mathBlockquoteDepth };
+    }
+
+    const seg = segments[matchSegIdx];
+    const beforeText = segments.slice(0, matchSegIdx).join('') + seg.slice(0, singleMatch.index);
+    const delimToken = singleMatch[0];
+    const afterText = seg.slice(singleMatch.index + delimToken.length) + segments.slice(matchSegIdx + 1).join('');
+    const hasBefore = /\S/.test(beforeText);
+    const hasAfter = /\S/.test(afterText);
+
+    if (mathBlockquoteDepth === null) {
+      const nextDepth = MarkdownRenderer.countBlockquoteDepth(containerPrefix);
+      if (hasBefore) {
+        if (!allowInlineSplit) {
+          return { lines: [line], mathBlockquoteDepth: null };
+        }
+        const outLines = [containerPrefix + beforeText.trimEnd(), continuationPrefix + delimToken];
+        if (hasAfter) {
+          outLines.push(continuationPrefix + afterText.trimStart());
+        }
+        return { lines: outLines, mathBlockquoteDepth: nextDepth };
+      }
+      if (hasAfter) {
+        return {
+          lines: [containerPrefix + delimToken, continuationPrefix + afterText.trimStart()],
+          mathBlockquoteDepth: nextDepth
+        };
+      }
+      return { lines: [line], mathBlockquoteDepth: nextDepth };
+    }
+
+    if (!hasBefore && !hasAfter) {
+      return { lines: [line], mathBlockquoteDepth: null };
+    }
+    const parts: string[] = [];
+    if (hasBefore) parts.push(beforeText.trimEnd());
+    parts.push(delimToken);
+    if (hasAfter) parts.push(afterText.trimStart());
+    return {
+      lines: parts.map((part, idx) => (idx === 0 ? containerPrefix : continuationPrefix) + part),
+      mathBlockquoteDepth: null
+    };
+  }
+
+  private static normalizeBracketAndDisplayMathLine(
+    line: string,
+    mathBlockquoteDepth: number | null,
+    allowInlineSplit: boolean
+  ): { lines: string[]; mathBlockquoteDepth: number | null } {
+    if (!line.includes('\\[') && !line.includes('\\]')) {
+      return MarkdownRenderer.normalizeDisplayMathLine(line, mathBlockquoteDepth, allowInlineSplit);
+    }
+    const { containerPrefix, continuationPrefix, rest } = MarkdownRenderer.splitContainerPrefix(line, mathBlockquoteDepth);
+    const segments = rest.split(/(`[^`]*`)/);
+    interface BracketToken {
+      segIdx: number;
+      start: number;
+      isOpener: boolean;
+      balanced: boolean;
+    }
+    const tokens: BracketToken[] = [];
+    const stack: BracketToken[] = [];
+    for (let i = 0; i < segments.length; i += 2) {
+      for (const m of segments[i].matchAll(/(?<!\\)\\\[|\\\]/g)) {
+        const isOpener = m[0] === '\\[';
+        const tok: BracketToken = { segIdx: i, start: m.index!, isOpener, balanced: false };
+        if (isOpener) {
+          stack.push(tok);
+        } else if (stack.length > 0) {
+          stack.pop()!.balanced = true;
+          tok.balanced = true;
+        }
+        tokens.push(tok);
+      }
+    }
+    if (tokens.length === 0) {
+      return MarkdownRenderer.normalizeDisplayMathLine(line, mathBlockquoteDepth, allowInlineSplit);
+    }
+    if (!tokens.some((t) => !t.balanced)) {
+      const converted = segments
+        .map((seg, idx) => (idx % 2 === 1 ? seg : seg.replace(/(?<!\\)\\\[|\\\]/g, '$$$$')))
+        .join('');
+      return MarkdownRenderer.normalizeDisplayMathLine(containerPrefix + converted, mathBlockquoteDepth, allowInlineSplit);
+    }
+    const outParts: string[] = [];
+    let buffer = '';
+    let nextDepth = mathBlockquoteDepth;
+    for (let i = 0; i < segments.length; i++) {
+      if (i % 2 === 1) {
+        buffer += segments[i];
+        continue;
+      }
+      const seg = segments[i];
+      let cursor = 0;
+      for (const tok of tokens) {
+        if (tok.segIdx === i) {
+          buffer += seg.slice(cursor, tok.start);
+          if (tok.balanced) {
+            buffer += '$$';
+          } else {
+            if (/\S/.test(buffer)) {
+              outParts.push(buffer.trim());
+            }
+            buffer = '';
+            outParts.push('$$');
+            nextDepth = tok.isOpener ? MarkdownRenderer.countBlockquoteDepth(containerPrefix) : null;
+          }
+          cursor = tok.start + 2;
+        }
+      }
+      buffer += seg.slice(cursor);
+    }
+    if (/\S/.test(buffer)) {
+      outParts.push(buffer.trimStart());
+    }
+    return {
+      lines: outParts.map((part, idx) => (idx === 0 ? containerPrefix : continuationPrefix) + part),
+      mathBlockquoteDepth: nextDepth
+    };
+  }
+
+  /**
+   * Pre-processes LaTeX math expressions within markdown, escaping reserved characters
+   * (e.g. unescaped '&', '_', '%') via KaTeXSanitizer to prevent KaTeX parse errors.
+   */
+  public static preprocessMath(markdown: string): string {
+    if (!markdown) {
+      return '';
+    }
+
+    const rawLines = markdown.split(/\r?\n/);
+    let fenceState: { char: string; length: number; blockquoteDepth: number; indent: number } | null = null;
+    let mathBlockquoteDepth: number | null = null;
+    let listContinuationIndent: string | null = null;
+    let inListMathContinuation = false;
+    const disambiguatedLines: string[] = [];
+
+    for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
+      const rawLine = rawLines[lineIdx];
+      const fenceMatch = /^([ \t>]*)(`{3,}|~{3,})([^\r\n]*)\r?$/.exec(rawLine);
+
+      if (fenceState === null) {
+        if (fenceMatch) {
+          const [, prefix, fenceTicks, infoString] = fenceMatch;
+          const { blockquoteDepth, indent } = MarkdownRenderer.getFencePrefixInfo(prefix);
+          if (fenceTicks[0] !== '`' || !infoString.includes('`')) {
+            fenceState = { char: fenceTicks[0], length: fenceTicks.length, blockquoteDepth, indent };
+            disambiguatedLines.push(rawLine);
+            continue;
+          }
+        }
+      } else {
+        if (fenceMatch) {
+          const [, prefix, fenceTicks, infoString] = fenceMatch;
+          const { blockquoteDepth, indent } = MarkdownRenderer.getFencePrefixInfo(prefix);
+          if (
+            blockquoteDepth === fenceState.blockquoteDepth &&
+            indent <= fenceState.indent + 3 &&
+            fenceTicks[0] === fenceState.char &&
+            fenceTicks.length >= fenceState.length &&
+            infoString.trim() === ''
+          ) {
+            fenceState = null;
+          }
+        }
+        disambiguatedLines.push(rawLine);
+        continue;
+      }
+
+      const wasInMathBlock = mathBlockquoteDepth !== null;
+      const listMatch = wasInMathBlock ? undefined : rawLine.match(MarkdownRenderer.LIST_MARKER_LINE_REGEX)?.[0];
+      if (!wasInMathBlock) {
+        if (/^\s*$/.test(rawLine) || /^\s*(?:#{1,6}\s|>)/.test(rawLine)) {
+          listContinuationIndent = null;
+          inListMathContinuation = false;
+        } else if (listMatch) {
+          listContinuationIndent = ' '.repeat(listMatch.length);
+          inListMathContinuation = false;
+        }
+      }
+
+      const allowInlineSplit =
+        !wasInMathBlock &&
+        MarkdownRenderer.countDisplayMathDelimitersOnLine(rawLine) === 1 &&
+        MarkdownRenderer.hasClosingDisplayMathAhead(rawLines, lineIdx + 1);
+
+      const normalized = MarkdownRenderer.normalizeBracketAndDisplayMathLine(
+        rawLine,
+        mathBlockquoteDepth,
+        allowInlineSplit
+      );
+      mathBlockquoteDepth = normalized.mathBlockquoteDepth;
+      const isMathContinuation = wasInMathBlock || mathBlockquoteDepth !== null;
+      const effectiveIndent = isMathContinuation || inListMathContinuation ? listContinuationIndent : null;
+      if (listContinuationIndent !== null && isMathContinuation) {
+        inListMathContinuation = true;
+      }
+
+      for (const [subIdx, subLine] of normalized.lines.entries()) {
+        const indentedLine =
+          effectiveIndent === null || (subIdx === 0 && listMatch)
+            ? subLine
+            : MarkdownRenderer.ensureMinimumIndent(subLine, effectiveIndent);
+
+        const processedSubLine = indentedLine
+          .split(/(`[^`]*`)/)
+          .map((segment, segIdx) => {
+            if (segIdx % 2 === 1) {
+              return segment;
+            }
+            let text = segment
+              .replace(/(?<!\\)\\\$/g, '\uE0D0')
+              .replace(/(?<!\\)\\[()]/g, '\uE0D1');
+
+            const singleDollarPositions: number[] = [];
+            for (let pos = 0; pos < text.length; pos++) {
+              if (text[pos] !== '$') continue;
+              let endPos = pos;
+              while (endPos < text.length && text[endPos] === '$') {
+                endPos++;
+              }
+              if (endPos - pos === 1) {
+                singleDollarPositions.push(pos);
+              }
+              pos = endPos - 1;
+            }
+
+            const literalIndices = new Set<number>();
+            let w = -1;
+
+            for (const x of singleDollarPositions) {
+              if (w === -1) {
+                w = x;
+                continue;
+              }
+              const v = text.slice(w + 1, x);
+              const y = text[x + 1] ?? '';
+              const B = /^[0-9]/.test(v) && !/[\\^_{}=+]/.test(v);
+              const C = MarkdownRenderer.matchShellVarLength(text, w);
+              const D = x - w === C;
+              const E = !/[A-Za-z0-9)\]}]/.test(text[x - 1]);
+
+              if (/[0-9]/.test(y) && B) {
+                literalIndices.add(w);
+                w = x;
+              } else if (
+                (MarkdownRenderer.matchShellVarLength(text, x) > 0 && (D || E)) ||
+                (C > 0 && !D && E && y !== '' && !/[\s.,;:!?)\]}'"*_~\u2014/]/.test(y))
+              ) {
+                literalIndices.add(w);
+                w = x;
+              } else if (v.includes('\uE0D1') || v.includes('$$')) {
+                literalIndices.add(w);
+                w = x;
+              } else if (B && /\s/.test(v) && /[a-zA-Z]/.test(v)) {
+                literalIndices.add(w);
+                if (y === '' || /[\s)\]},.:;!?"'/\-_~*\u2014]/.test(y)) {
+                  literalIndices.add(x);
+                  w = -1;
+                } else {
+                  w = x;
+                }
+              } else {
+                w = -1;
+              }
+            }
+
+            if (w !== -1) {
+              literalIndices.add(w);
+            }
+
+            if (literalIndices.size !== 0) {
+              let rebuilt = '';
+              for (let i = 0; i < text.length; i++) {
+                rebuilt += literalIndices.has(i) ? '\uE0D0' : text[i];
+              }
+              text = rebuilt;
+            }
+
+            return text.replace(/\uE0D1/g, '$');
+          })
+          .join('');
+
+        disambiguatedLines.push(processedSubLine);
+      }
+    }
+
+    const lines = disambiguatedLines;
+    const result: string[] = [];
+    let inCodeBlock = false;
+    let inDisplayMath = false;
+    let displayMathPrefix = '';
+    let displayMathBuffer: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Skip fenced code blocks
+      if (/^([ \t>]*)(`{3,}|~{3,})/.test(line)) {
+        inCodeBlock = !inCodeBlock;
+        result.push(line);
+        continue;
+      }
+
+      if (inCodeBlock) {
+        result.push(line);
+        continue;
+      }
+
+      const quoteTrimmed = trimmed.replace(/^(?:>\s*)+/, '').trim();
+      const quotePrefixMatch = line.match(/^(\s*(?:>\s*)+)/);
+      const currentQuotePrefix = quotePrefixMatch ? quotePrefixMatch[1] : '';
+
+      // Check multi-line display math opening
+      if (!inDisplayMath && quoteTrimmed === '$$') {
+        inDisplayMath = true;
+        displayMathPrefix = currentQuotePrefix;
+        displayMathBuffer = [];
+        continue;
+      }
+
+      // Check multi-line display math closing
+      if (inDisplayMath && quoteTrimmed === '$$') {
+        inDisplayMath = false;
+        const sanitizedBlock = KaTeXSanitizer.sanitize(displayMathBuffer.join('\n'));
+        const sanitizedLines = sanitizedBlock
+          .split('\n')
+          .map((l) => (displayMathPrefix ? displayMathPrefix + l : l))
+          .join('\n');
+        const prevLine = result.length > 0 ? result[result.length - 1] : '';
+        if (prevLine.trim() !== '' && prevLine.replace(/^(?:>\s*)+/, '').trim() !== '') {
+          result.push(displayMathPrefix.trimEnd());
+        }
+        result.push(`${displayMathPrefix}$$\n${sanitizedLines}\n${displayMathPrefix}$$`);
+        displayMathPrefix = '';
+        continue;
+      }
+
+      if (inDisplayMath) {
+        const cleanMathLine = displayMathPrefix && line.startsWith(displayMathPrefix)
+          ? line.slice(displayMathPrefix.length)
+          : line.replace(/^\s*(?:>\s*)+/, '');
+        displayMathBuffer.push(cleanMathLine);
+        continue;
+      }
+
+      // Extract and mask inline code blocks to protect them from math regexes
+      const codeTokens: string[] = [];
+      let processedLine = line.replace(/`[^`\r\n]+`/g, (code) => {
+        const idx = codeTokens.length;
+        codeTokens.push(code);
+        return `___CODE_INLINE_TOKEN_${idx}___`;
+      });
+
+      // Process single-line display math: $$ ... $$
+      processedLine = processedLine.replace(/\$\$([\s\S]*?)\$\$/g, (match, expr) => {
+        return '$$' + KaTeXSanitizer.sanitize(expr) + '$$';
+      });
+
+      // Process inline math: $ ... $ (all remaining single $ pairs are guaranteed valid by xGb)
+      processedLine = processedLine.replace(/(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)/g, (match, expr) => {
+        return '$' + KaTeXSanitizer.sanitize(expr) + '$';
+      });
+
+      // Restore inline code blocks
+      for (let k = codeTokens.length - 1; k >= 0; k--) {
+        processedLine = processedLine.replace(`___CODE_INLINE_TOKEN_${k}___`, codeTokens[k]);
+      }
+
+      result.push(processedLine);
+    }
+
+    if (inDisplayMath) {
+      result.push(displayMathPrefix + '$$\n' + KaTeXSanitizer.sanitize(displayMathBuffer.join('\n')));
+    }
+
+    return result.join('\n');
+  }
+
   /**
    * Pre-processes chat markdown text to fix common list boundary issues.
    * In casual chat inputs (e.g. Shift+Enter), users often write non-list lines
@@ -472,11 +974,24 @@ export class MarkdownRenderer {
         continue;
       }
 
+      // Mask existing markdown links and inline code blocks so bare autolinker never corrupts them
+      const urlProtectedTokens: string[] = [];
+      const maskUrlToken = (str: string): string => {
+        const idx = urlProtectedTokens.length;
+        urlProtectedTokens.push(str);
+        return `___FILE_URL_MASK_${idx}___`;
+      };
+
+      // 1. Mask markdown links: [text](href)
+      let processed = line.replace(/\[[^\]\r\n]*\]\([^\)\r\n]*\)/g, (m) => maskUrlToken(m));
+      // 2. Mask inline code: `code`
+      processed = processed.replace(/`[^`\r\n]+`/g, (m) => maskUrlToken(m));
+
       // Autolink bare file:/// URLs that are not already enclosed in markdown links or quotes
-      const processed = line.replace(
+      processed = processed.replace(
         /(^|[\s\(\[<])((?:file:\/\/\/)[^\s\)\]>"']+)/g,
         (match, prefix, fileUrl) => {
-          if (prefix === '(') {
+          if (prefix === '(' || prefix === '[') {
             return match;
           }
           const encodedUrl = encodeURIComponent(fileUrl);
@@ -494,6 +1009,11 @@ export class MarkdownRenderer {
           return `${prefix}<a href="javascript:void(0)" class="markdown-link file-link" data-file-url="${encodedUrl}" data-filepath="${encodedUrl}" title="${MarkdownRenderer.escapeHtml(displayPath)}">${fileUrl}</a>`;
         }
       );
+
+      // Restore protected tokens in reverse order
+      for (let k = urlProtectedTokens.length - 1; k >= 0; k--) {
+        processed = processed.replace(`___FILE_URL_MASK_${k}___`, urlProtectedTokens[k]);
+      }
 
       result.push(processed);
     }
@@ -516,8 +1036,11 @@ export class MarkdownRenderer {
       // Pre-process list boundaries so unindented chat lines don't get stuck inside <li>
       const listProcessed = MarkdownRenderer.preprocessMarkdownLists(markdown);
 
+      // Pre-process math expressions so LaTeX control characters are safely escaped
+      const mathProcessed = MarkdownRenderer.preprocessMath(listProcessed);
+
       // Pre-process bare file:/// URLs so they become clickable links
-      const fileUrlProcessed = MarkdownRenderer.preprocessFileUrls(listProcessed);
+      const fileUrlProcessed = MarkdownRenderer.preprocessFileUrls(mathProcessed);
 
       // Pre-process GitHub Alerts (> [!NOTE], > [!TIP], etc.)
       const alertProcessed = fileUrlProcessed.replace(
@@ -534,6 +1057,18 @@ export class MarkdownRenderer {
       );
 
       let html = marked.parse(alertProcessed) as string;
+
+      // Restore Antigravity PUA sentinel (\uE0D0) back to literal '$' after Marked + KaTeX parsing
+      html = html.replace(/\uE0D0/g, '$');
+
+      // Intercept and transform any KaTeX parse errors into clean fallback badges
+      html = html.replace(/<span class="katex-error"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/span>/gi, (match, errorTitle, rawLatex) => {
+        const cleanText = KaTeXSanitizer.stripToCleanText(rawLatex) || rawLatex;
+        const escapedRaw = MarkdownRenderer.escapeHtml(rawLatex);
+        const escapedClean = MarkdownRenderer.escapeHtml(cleanText);
+        const safeTitle = MarkdownRenderer.escapeHtml(errorTitle || 'Formula rendering fallback');
+        return `<span class="katex-fallback" data-raw-latex="${escapedRaw}" title="${safeTitle}">${escapedClean}</span>`;
+      });
 
       // Post-process any raw <img> tags that might not have gone through marked's image renderer
       html = html.replace(/<img\b([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {

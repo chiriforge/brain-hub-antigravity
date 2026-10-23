@@ -2,7 +2,7 @@
   "name": "brain-hub-antigravity",
   "displayName": "Brain Hub for Antigravity",
   "description": "Search, view, resume, and sync Antigravity Brain sessions across machines.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "publisher": "chiriforge",
   "license": "MIT",
   "repository": {
@@ -502,12 +502,13 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.80.0",
-    "@vscode/vsce": "^4.0.0",
-    "esbuild": "^0.28.1",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {
     "@types/katex": "^0.16.8",
+    "beautiful-mermaid": "^1.1.3",
     "highlight.js": "^11.12.0",
     "katex": "^0.18.4",
     "marked": "^18.0.10",

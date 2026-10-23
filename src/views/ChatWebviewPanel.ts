@@ -319,7 +319,7 @@ export class ChatWebviewPanel {
       }
       this.lastContentSignature = newSignature;
 
-      const allSessions = await scanner.scanSessions();
+      const allSessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
       const targetInList = allSessions.find((s) => s.id === this.currentSession.id);
       if (targetInList) {
         data.session.rootId = targetInList.rootId || data.session.rootId || data.session.id;
@@ -809,6 +809,13 @@ export class ChatWebviewPanel {
             --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.15);
             --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
             --font-mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+            --mermaid-bg: #18181B;
+            --mermaid-fg: #F4F4F5;
+            --mermaid-line: #71717A;
+            --mermaid-accent: #71717A;
+            --mermaid-muted: #A1A1AA;
+            --mermaid-surface: #27272A;
+            --mermaid-border: #3F3F46;
           }
 
           /* Light Theme Overrides */
@@ -818,6 +825,23 @@ export class ChatWebviewPanel {
             --ai-bubble-bg: rgba(0, 0, 0, 0.03);
             --ai-bubble-border: rgba(0, 0, 0, 0.12);
             --code-bg: rgba(0, 0, 0, 0.05);
+            --mermaid-bg: #FFFFFF;
+            --mermaid-fg: #1E293B;
+            --mermaid-line: #64748B;
+            --mermaid-accent: #64748B;
+            --mermaid-muted: #475569;
+            --mermaid-surface: #F8FAFC;
+            --mermaid-border: #CBD5E1;
+          }
+
+          body.vscode-high-contrast {
+            --mermaid-bg: #000000;
+            --mermaid-fg: #FFFFFF;
+            --mermaid-line: #FFFFFF;
+            --mermaid-accent: #38BDF8;
+            --mermaid-muted: #E4E4E7;
+            --mermaid-surface: #09090B;
+            --mermaid-border: #FFFFFF;
           }
 
           * {
@@ -1813,6 +1837,21 @@ export class ChatWebviewPanel {
             margin: 6px 2px;
           }
 
+          .katex-fallback {
+            display: inline-block;
+            padding: 2px 8px;
+            margin: 3px 2px;
+            font-family: var(--vscode-editor-font-family, Consolas, monospace);
+            font-size: 0.92em;
+            line-height: 1.4;
+            color: var(--vscode-foreground);
+            background: var(--vscode-badge-background, rgba(127, 127, 127, 0.15));
+            border: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, 0.25));
+            border-radius: 4px;
+            white-space: normal;
+            word-break: break-word;
+          }
+
           /* Mermaid Diagram Styling */
           .mermaid-container {
             margin: 14px 0;
@@ -1844,17 +1883,73 @@ export class ChatWebviewPanel {
             gap: 6px;
           }
 
+          .mermaid-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+          }
+
+          .mermaid-btn {
+            background: var(--btn-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s ease;
+          }
+
+          .mermaid-btn:hover {
+            background: var(--btn-hover);
+            border-color: var(--border-hover);
+          }
+
+          .mermaid-btn.primary {
+            background: var(--btn-primary-bg);
+            color: var(--btn-primary-fg);
+          }
+
           .mermaid-body {
             padding: 16px;
             display: flex;
             justify-content: safe center;
             overflow-x: auto;
-            background: rgba(0, 0, 0, 0.08);
+            background: var(--mermaid-bg, rgba(0, 0, 0, 0.08));
           }
 
           .mermaid-body svg {
             max-width: 100%;
             height: auto;
+            cursor: pointer;
+          }
+
+          .mermaid-card.scroll-mode .mermaid-body {
+            justify-content: flex-start;
+          }
+
+          .mermaid-card.scroll-mode .mermaid-body svg {
+            max-width: none !important;
+            width: auto !important;
+            min-width: max-content;
+          }
+
+          .mermaid-source-view {
+            display: none;
+            padding: 12px;
+            background: var(--code-bg);
+            border-top: 1px solid var(--border-color);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            white-space: pre-wrap;
+            color: var(--text-primary);
+          }
+
+          .mermaid-source-view.visible {
+            display: block;
           }
 
           /* Prevent SVG text clipping on descenders (y, g, p, q, j) */
@@ -2004,6 +2099,127 @@ export class ChatWebviewPanel {
             left: -9999px !important;
             opacity: 0 !important;
             pointer-events: none !important;
+          }
+
+          /* Fullscreen Modal for Diagrams - Architectural Canvas with Pan & Zoom */
+          .fullscreen-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 19999;
+            background-color: var(--bg-primary);
+            background-image: radial-gradient(var(--border-color) 1.2px, transparent 1.2px);
+            background-size: 20px 20px;
+            flex-direction: column;
+            user-select: none;
+            overflow: hidden;
+          }
+
+          .fullscreen-modal.active {
+            display: flex;
+          }
+
+          .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+            z-index: 10;
+            gap: 12px;
+          }
+
+          .modal-title-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+          }
+
+          .modal-title {
+            font-weight: 700;
+            font-size: 13.5px;
+            color: var(--text-primary);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+          }
+
+          .zoom-badge {
+            background: rgba(56, 189, 248, 0.12);
+            color: var(--accent-blue);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 11px;
+            font-family: var(--font-mono);
+          }
+
+          .modal-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+          }
+
+          .modal-canvas-viewport {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            cursor: grab;
+          }
+
+          .modal-canvas-viewport.is-dragging {
+            cursor: grabbing;
+          }
+
+          .modal-canvas-content {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform-origin: 0 0;
+            will-change: transform;
+          }
+
+          .modal-canvas-content svg {
+            display: block;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+            border-radius: var(--radius-md);
+            background: var(--mermaid-bg, var(--bg-secondary)) !important;
+            border: 1px solid var(--border-color);
+            padding: 24px;
+            box-sizing: content-box;
+            max-width: none !important;
+          }
+
+          .modal-hint-bar {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            padding: 5px 14px;
+            border-radius: 20px;
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+            pointer-events: none;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+          }
+
+          .modal-hint-bar kbd {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 3px;
+            padding: 1px 4px;
+            font-family: var(--font-mono);
+            font-size: 10px;
           }
 
           /* Full Official KaTeX Stylesheet with local fonts */
@@ -2294,6 +2510,30 @@ export class ChatWebviewPanel {
         <div class="floating-controls">
           <button class="float-btn" id="btnChatScrollTop" onclick="scrollToEdge('top')" title="Scroll to top of chat">▲</button>
           <button class="float-btn" id="btnChatScrollBottom" onclick="scrollToEdge('bottom')" title="Scroll to bottom of chat">▼</button>
+        </div>
+
+        <!-- Fullscreen Diagram Modal -->
+        <div class="fullscreen-modal" id="diagramModal" tabindex="-1">
+          <div class="modal-header">
+            <div class="modal-title-group">
+              <span class="modal-title">📊 Diagram Fullscreen Canvas</span>
+              <span class="zoom-badge" id="zoomBadge">100%</span>
+            </div>
+            <div class="modal-controls">
+              <button class="action-btn" onclick="zoomModal(1.2)" title="Zoom In (+)">➕ Zoom In</button>
+              <button class="action-btn" onclick="zoomModal(0.833)" title="Zoom Out (-)">➖ Zoom Out</button>
+              <button class="action-btn" onclick="fitModalToScreen()" title="Fit to View (0)">⛶ Fit View</button>
+              <button class="action-btn" onclick="resetModalZoom()" title="Reset to 100% (1)">100%</button>
+              <button class="action-btn" onclick="copyModalSvg()" title="Copy SVG code">📋 Copy SVG</button>
+              <button class="action-btn primary" onclick="closeModal()" title="Close Fullscreen (Esc)">✕ Close</button>
+            </div>
+          </div>
+          <div class="modal-canvas-viewport" id="modalViewport">
+            <div class="modal-canvas-content" id="modalContent"></div>
+          </div>
+          <div class="modal-hint-bar">
+            <span>💡 Drag to pan • Scroll to zoom • Double-click to fit • <kbd>Esc</kbd> to exit</span>
+          </div>
         </div>
 
         <!-- Fullscreen Media Lightbox Modal -->
@@ -3700,7 +3940,290 @@ export class ChatWebviewPanel {
             return false;
           }
 
+          function mountMermaidCard(el, rawCode, renderedSvg) {
+            const encodedRaw = encodeURIComponent(rawCode);
+            el.innerHTML =
+              '<div class="mermaid-card">' +
+                '<div class="mermaid-header">' +
+                  '<span class="mermaid-tag">📊 Mermaid Diagram</span>' +
+                  '<div class="mermaid-actions">' +
+                    '<button class="mermaid-btn" onclick="toggleDiagramFit(this)" title="Toggle 100% scrollable size or fit to width"><span class="fit-label">Scroll</span></button>' +
+                    '<button class="mermaid-btn" onclick="toggleSourceView(this)" title="View Mermaid source code">Code</button>' +
+                    '<button class="copy-code-btn" data-code="' + encodedRaw + '" title="Copy raw Mermaid code">' +
+                      '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">' +
+                        '<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>' +
+                        '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>' +
+                      '</svg>' +
+                      '<span>Copy Code</span>' +
+                    '</button>' +
+                    '<button class="mermaid-btn" onclick="openFullscreen(this)" title="View diagram in fullscreen">🔍 Zoom</button>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="mermaid-body" onclick="openFullscreen(this)" title="Click diagram to open fullscreen zoom">' + renderedSvg + '</div>' +
+                '<div class="mermaid-source-view"><pre><code>' + escapeHtml(rawCode) + '</code></pre></div>' +
+              '</div>';
+          }
+
+          function toggleDiagramFit(btn) {
+            const card = btn && btn.closest ? btn.closest('.mermaid-card') : null;
+            if (!card) return;
+            card.classList.toggle('scroll-mode');
+            const isScroll = card.classList.contains('scroll-mode');
+            const label = btn.querySelector('.fit-label');
+            if (label) label.innerText = isScroll ? 'Fit' : 'Scroll';
+            btn.classList.toggle('primary', isScroll);
+          }
+
+          function toggleSourceView(btn) {
+            const card = btn && btn.closest ? btn.closest('.mermaid-card') : null;
+            if (!card) return;
+            const src = card.querySelector('.mermaid-source-view');
+            if (src) {
+              src.classList.toggle('visible');
+              btn.classList.toggle('primary', src.classList.contains('visible'));
+            }
+          }
+
+          let modalScale = 1;
+          let modalPanX = 0;
+          let modalPanY = 0;
+          let isPanning = false;
+          let startPointerX = 0;
+          let startPointerY = 0;
+
+          function getSvgNaturalDimensions(svg) {
+            let svgW = 0;
+            let svgH = 0;
+            if (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width > 0) {
+              svgW = svg.viewBox.baseVal.width;
+              svgH = svg.viewBox.baseVal.height;
+            } else if (svg.getAttribute('viewBox')) {
+              const parts = svg.getAttribute('viewBox').trim().split(/[\s,]+/);
+              if (parts.length === 4) {
+                svgW = parseFloat(parts[2]);
+                svgH = parseFloat(parts[3]);
+              }
+            }
+            if (!svgW || svgW <= 0) {
+              svgW = svg.scrollWidth || svg.clientWidth || 800;
+            }
+            if (!svgH || svgH <= 0) {
+              svgH = svg.scrollHeight || svg.clientHeight || 600;
+            }
+            return { width: svgW, height: svgH };
+          }
+
+          function applySvgNaturalDimensions(svg, content) {
+            if (!svg) return { width: 800, height: 600, totalW: 848, totalH: 648 };
+            const dims = getSvgNaturalDimensions(svg);
+            const padOffset = 48;
+            const totalW = dims.width + padOffset;
+            const totalH = dims.height + padOffset;
+
+            svg.style.width = dims.width + 'px';
+            svg.style.height = dims.height + 'px';
+            svg.style.maxWidth = 'none';
+            svg.style.minWidth = dims.width + 'px';
+            svg.style.minHeight = dims.height + 'px';
+
+            if (content) {
+              content.style.width = totalW + 'px';
+              content.style.height = totalH + 'px';
+            }
+
+            return { width: dims.width, height: dims.height, totalW: totalW, totalH: totalH };
+          }
+
+          function updateModalTransform() {
+            const content = document.getElementById('modalContent');
+            const badge = document.getElementById('zoomBadge');
+            if (content) {
+              content.style.transform = 'translate(' + modalPanX + 'px, ' + modalPanY + 'px) scale(' + modalScale + ')';
+            }
+            if (badge) {
+              badge.innerText = Math.round(modalScale * 100) + '%';
+            }
+          }
+
+          function openFullscreen(btn) {
+            const card = btn && btn.closest ? btn.closest('.mermaid-card') : null;
+            if (!card) return;
+            const svg = card.querySelector('.mermaid-body svg');
+            if (!svg) return;
+            const modal = document.getElementById('diagramModal');
+            const content = document.getElementById('modalContent');
+            if (!modal || !content) return;
+            content.innerHTML = svg.outerHTML;
+
+            const clonedSvg = content.querySelector('svg');
+            if (clonedSvg) {
+              applySvgNaturalDimensions(clonedSvg, content);
+            }
+
+            modal.classList.add('active');
+            modal.focus();
+            fitModalToScreen();
+            requestAnimationFrame(fitModalToScreen);
+          }
+
+          function closeModal() {
+            const modal = document.getElementById('diagramModal');
+            if (modal) {
+              modal.classList.remove('active');
+            }
+            const content = document.getElementById('modalContent');
+            if (content) {
+              content.innerHTML = '';
+            }
+          }
+
+          function resetModalZoom() {
+            modalScale = 1;
+            centerModalContent();
+            updateModalTransform();
+          }
+
+          function zoomModal(factor) {
+            const viewport = document.getElementById('modalViewport');
+            if (!viewport) return;
+            const rect = viewport.getBoundingClientRect();
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            zoomAtPoint(factor, centerX, centerY);
+          }
+
+          function zoomAtPoint(factor, clientX, clientY) {
+            const oldScale = modalScale;
+            let newScale = oldScale * factor;
+            newScale = Math.max(0.05, Math.min(10, newScale));
+
+            modalPanX = clientX - (clientX - modalPanX) * (newScale / oldScale);
+            modalPanY = clientY - (clientY - modalPanY) * (newScale / oldScale);
+            modalScale = newScale;
+
+            updateModalTransform();
+          }
+
+          function centerModalContent() {
+            const viewport = document.getElementById('modalViewport');
+            const content = document.getElementById('modalContent');
+            const svg = content ? content.querySelector('svg') : null;
+            if (!viewport || !svg) return;
+
+            const dims = applySvgNaturalDimensions(svg, content);
+            const vRect = viewport.getBoundingClientRect();
+
+            modalPanX = (vRect.width - dims.totalW * modalScale) / 2;
+            modalPanY = (vRect.height - dims.totalH * modalScale) / 2;
+          }
+
+          function fitModalToScreen() {
+            const viewport = document.getElementById('modalViewport');
+            const content = document.getElementById('modalContent');
+            const svg = content ? content.querySelector('svg') : null;
+            if (!viewport || !svg) return;
+
+            const dims = applySvgNaturalDimensions(svg, content);
+            const vRect = viewport.getBoundingClientRect();
+            if (vRect.width <= 0 || vRect.height <= 0) return;
+
+            const pad = 80;
+            const availableW = Math.max(50, vRect.width - pad);
+            const availableH = Math.max(50, vRect.height - pad);
+
+            const scaleX = availableW / dims.totalW;
+            const scaleY = availableH / dims.totalH;
+            modalScale = Math.max(0.05, Math.min(1.5, Math.min(scaleX, scaleY)));
+
+            modalPanX = (vRect.width - dims.totalW * modalScale) / 2;
+            modalPanY = (vRect.height - dims.totalH * modalScale) / 2;
+            updateModalTransform();
+          }
+
+          function copyModalSvg() {
+            const content = document.getElementById('modalContent');
+            const svg = content ? content.querySelector('svg') : null;
+            if (svg && navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(svg.outerHTML).then(() => {
+                if (typeof showToast === 'function') showToast('SVG markup copied to clipboard!', 'success');
+              }).catch(() => {});
+            }
+          }
+
+          window.addEventListener('DOMContentLoaded', () => {
+            const viewport = document.getElementById('modalViewport');
+            if (!viewport) return;
+
+            viewport.addEventListener('mousedown', (e) => {
+              if (e.button !== 0) return;
+              isPanning = true;
+              startPointerX = e.clientX - modalPanX;
+              startPointerY = e.clientY - modalPanY;
+              viewport.classList.add('is-dragging');
+            });
+
+            window.addEventListener('mousemove', (e) => {
+              if (!isPanning) return;
+              modalPanX = e.clientX - startPointerX;
+              modalPanY = e.clientY - startPointerY;
+              updateModalTransform();
+            });
+
+            window.addEventListener('mouseup', () => {
+              if (isPanning) {
+                isPanning = false;
+                viewport.classList.remove('is-dragging');
+              }
+            });
+
+            viewport.addEventListener('wheel', (e) => {
+              e.preventDefault();
+              const rect = viewport.getBoundingClientRect();
+              const mouseX = e.clientX - rect.left;
+              const mouseY = e.clientY - rect.top;
+              const factor = e.deltaY < 0 ? 1.12 : 0.89;
+              zoomAtPoint(factor, mouseX, mouseY);
+            }, { passive: false });
+
+            viewport.addEventListener('dblclick', (e) => {
+              if (e.target && e.target.closest && e.target.closest('.modal-controls')) return;
+              fitModalToScreen();
+            });
+          });
+
+          window.addEventListener('keydown', (e) => {
+            const modal = document.getElementById('diagramModal');
+            if (!modal || !modal.classList.contains('active')) return;
+            if (e.key === 'Escape' || e.keyCode === 27) {
+              closeModal();
+            } else if (e.key === '+' || e.key === '=') {
+              zoomModal(1.2);
+            } else if (e.key === '-' || e.key === '_') {
+              zoomModal(0.833);
+            } else if (e.key === '0') {
+              fitModalToScreen();
+            } else if (e.key === '1') {
+              resetModalZoom();
+            }
+          });
+
           async function renderMermaidDiagrams() {
+            const initialContainers = document.querySelectorAll('.mermaid-container:not(.rendered)');
+            if (initialContainers.length === 0) return;
+
+            // Step 1: Synchronously mount pre-rendered beautiful-mermaid SVGs without loading mermaid.min.js
+            for (let i = 0; i < initialContainers.length; i++) {
+              const el = initialContainers[i];
+              const beautifulEncoded = el.getAttribute('data-beautiful-svg') || '';
+              if (beautifulEncoded) {
+                el.classList.add('rendered');
+                const rawCode = decodeURIComponent(el.getAttribute('data-mermaid') || '');
+                const renderedSvg = decodeURIComponent(beautifulEncoded);
+                mountMermaidCard(el, rawCode, renderedSvg);
+              }
+            }
+
+            // Step 2: Fallback to mermaid.min.js only for remaining containers (e.g. mindmap, gantt)
             const pending = document.querySelectorAll('.mermaid-container:not(.rendered)');
             if (pending.length === 0) return;
 
@@ -3798,20 +4321,7 @@ export class ChatWebviewPanel {
               if (leftover2) leftover2.remove();
 
               if (renderedSvg) {
-                el.innerHTML =
-                  '<div class="mermaid-card">' +
-                    '<div class="mermaid-header">' +
-                      '<span class="mermaid-tag">📊 Mermaid Diagram</span>' +
-                      '<button class="copy-code-btn" data-code="' + encodeURIComponent(rawCode) + '" title="Copy raw Mermaid code">' +
-                        '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">' +
-                          '<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>' +
-                          '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>' +
-                        '</svg>' +
-                        '<span>Copy Code</span>' +
-                      '</button>' +
-                    '</div>' +
-                    '<div class="mermaid-body">' + renderedSvg + '</div>' +
-                  '</div>';
+                mountMermaidCard(el, rawCode, renderedSvg);
               } else {
                 const errMsg = renderErr && renderErr.message ? renderErr.message : String(renderErr || 'Syntax error in diagram definition');
                 const fence = String.fromCharCode(96, 96, 96);

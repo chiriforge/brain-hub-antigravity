@@ -36,14 +36,74 @@ export class GitSyncService {
   private execGit(command: string, cwd?: string): Promise<{ stdout: string; stderr: string; code: number }> {
     const targetCwd = cwd || this.getBrainDir();
     return new Promise((resolve) => {
-      cp.exec(`git ${command}`, { cwd: targetCwd, encoding: 'utf8' }, (error, stdout, stderr) => {
-        resolve({
-          stdout: stdout ? stdout.trim() : '',
-          stderr: stderr ? stderr.trim() : '',
-          code: error ? (error.code ?? 1) : 0
-        });
-      });
+      const gitEnv = {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_ASKPASS: '',
+        GIT_PAGER: 'cat'
+      };
+      cp.exec(
+        `git ${command}`,
+        {
+          cwd: targetCwd,
+          encoding: 'utf8',
+          timeout: 45000,
+          maxBuffer: 50 * 1024 * 1024,
+          killSignal: 'SIGKILL',
+          env: gitEnv
+        },
+        (error, stdout, stderr) => {
+          resolve({
+            stdout: stdout ? stdout.trim() : '',
+            stderr: stderr ? stderr.trim() : '',
+            code: error ? (error.code ?? 1) : 0
+          });
+        }
+      );
     });
+  }
+
+  public ensureCleanIndexLock(): boolean {
+    const brainDir = this.getBrainDir();
+    const lockFile = path.join(brainDir, '.git', 'index.lock');
+    if (fs.existsSync(lockFile)) {
+      try {
+        const stats = fs.statSync(lockFile);
+        const ageMs = Date.now() - stats.mtimeMs;
+        if (ageMs > 30000) {
+          console.log(`Pruning stale .git/index.lock (age: ${Math.round(ageMs / 1000)}s)`);
+          fs.unlinkSync(lockFile);
+          return true;
+        }
+      } catch (err) {
+        console.warn('Could not inspect or remove .git/index.lock:', err);
+      }
+    }
+    return false;
+  }
+
+  public async recoverZombieRebase(): Promise<boolean> {
+    const brainDir = this.getBrainDir();
+    const gitDir = path.join(brainDir, '.git');
+    if (!fs.existsSync(gitDir)) return false;
+
+    const rebaseMergeDir = path.join(gitDir, 'rebase-merge');
+    const rebaseApplyDir = path.join(gitDir, 'rebase-apply');
+
+    if (fs.existsSync(rebaseMergeDir) || fs.existsSync(rebaseApplyDir)) {
+      console.log('Detected zombie or unfinished git rebase directory. Recovering...');
+      try {
+        await this.execGit('rebase --quit');
+      } catch {}
+      try {
+        if (fs.existsSync(rebaseMergeDir)) fs.rmSync(rebaseMergeDir, { recursive: true, force: true });
+        if (fs.existsSync(rebaseApplyDir)) fs.rmSync(rebaseApplyDir, { recursive: true, force: true });
+        return true;
+      } catch (err) {
+        console.warn('Failed to prune rebase directory:', err);
+      }
+    }
+    return false;
   }
 
   public async isGitRepo(): Promise<boolean> {
@@ -95,27 +155,44 @@ export class GitSyncService {
     }
 
     const gitignorePath = path.join(brainDir, '.gitignore');
-    const defaultIgnore = [
+    const defaultIgnoreRules = [
       'tempmediaStorage/',
       '*.tmp',
       '*.log',
       '.DS_Store',
       'Thumbs.db',
-      '.vscode-test/'
-    ].join('\n');
+      '.vscode-test/',
+      '.sessions_index_cache.json',
+      '.antigravity_sync_state.json'
+    ];
 
-    if (!fs.existsSync(gitignorePath)) {
-      await fs.promises.writeFile(gitignorePath, defaultIgnore + '\n', 'utf8');
-    } else {
-      const existing = await fs.promises.readFile(gitignorePath, 'utf8');
-      if (!existing.includes('tempmediaStorage')) {
-        await fs.promises.appendFile(gitignorePath, '\ntempmediaStorage/\n', 'utf8');
+    let currentContent = '';
+    if (fs.existsSync(gitignorePath)) {
+      currentContent = await fs.promises.readFile(gitignorePath, 'utf8');
+    }
+
+    let modified = false;
+    for (const rule of defaultIgnoreRules) {
+      if (!currentContent.includes(rule)) {
+        currentContent += (currentContent.endsWith('\n') || !currentContent ? '' : '\n') + rule + '\n';
+        modified = true;
       }
+    }
+
+    if (modified || !fs.existsSync(gitignorePath)) {
+      await fs.promises.writeFile(gitignorePath, currentContent, 'utf8');
     }
 
     if (await this.isGitRepo()) {
       await this.execGit('config diff.ignoreSubmodules all');
       await this.execGit('config status.submodulesummary 0');
+
+      // If .sessions_index_cache.json is tracked by Git, untrack it so it stays local-only
+      const trackedCheck = await this.execGit('ls-files .sessions_index_cache.json');
+      if (trackedCheck.code === 0 && trackedCheck.stdout.includes('.sessions_index_cache.json')) {
+        console.log('Untracking .sessions_index_cache.json from Git index...');
+        await this.execGit('rm --cached .sessions_index_cache.json');
+      }
     }
   }
 
@@ -163,12 +240,25 @@ export class GitSyncService {
       if (fs.existsSync(filePath)) {
         const raw = fs.readFileSync(filePath, 'utf8');
         const data = JSON.parse(raw);
+        const pid = Number(data.syncedByPid) || 0;
+        const lockExpiresAt = Number(data.lockExpiresAt) || 0;
+        let inProgress = !!data.inProgress;
+
+        if (inProgress) {
+          if (lockExpiresAt > 0 && Date.now() > lockExpiresAt) {
+            inProgress = false;
+          } else if (pid > 0 && !SessionScanner.getInstance().isProcessAlive(pid)) {
+            console.log(`Clearing stale git sync lock from dead PID ${pid}`);
+            inProgress = false;
+          }
+        }
+
         return {
           lastSyncTimestamp: Number(data.lastSyncTimestamp) || 0,
           lastSyncTimeStr: data.lastSyncTimeStr || '',
-          inProgress: !!data.inProgress,
-          lockExpiresAt: Number(data.lockExpiresAt) || 0,
-          syncedByPid: Number(data.syncedByPid) || 0
+          inProgress,
+          lockExpiresAt,
+          syncedByPid: pid
         };
       }
     } catch {}
@@ -210,6 +300,9 @@ export class GitSyncService {
       return false;
     }
 
+    this.ensureCleanIndexLock();
+    await this.recoverZombieRebase();
+
     const state = this.readSyncState();
     const now = Date.now();
 
@@ -247,13 +340,21 @@ export class GitSyncService {
         await this.execGit(`commit -m "chore: auto background sync ${nowStr}"`);
       }
 
-      let pullRes = await this.execGit('pull --rebase --autostash origin main');
+      let pullRes = await this.execGit('pull origin main --no-rebase -X ours');
       if (pullRes.code !== 0) {
-        await this.execGit('rebase --abort');
         pullRes = await this.execGit('pull origin main --no-edit --allow-unrelated-histories');
       }
 
-      await this.execGit('push -u origin main');
+      const pushRes = await this.execGit('push -u origin main');
+      if (pushRes.code !== 0) {
+        console.warn('Background git push failed:', pushRes.stderr || pushRes.stdout);
+        this.writeSyncState({
+          inProgress: false,
+          lockExpiresAt: 0
+        });
+        return false;
+      }
+
       this.writeSyncState({
         inProgress: false,
         lockExpiresAt: 0,
@@ -282,6 +383,9 @@ export class GitSyncService {
       vscode.window.showErrorMessage('Brain directory does not exist.');
       return;
     }
+
+    this.ensureCleanIndexLock();
+    await this.recoverZombieRebase();
 
     const status = await this.getStatus();
     if (!status.isRepo || !status.hasRemote) {
@@ -320,10 +424,9 @@ export class GitSyncService {
           }
 
           progress.report({ message: 'Merging remote sessions from other machines...' });
-          let pullRes = await this.execGit('pull --rebase --autostash origin main');
+          let pullRes = await this.execGit('pull origin main --no-rebase -X ours');
 
           if (pullRes.code !== 0) {
-            await this.execGit('rebase --abort');
             pullRes = await this.execGit('pull origin main --no-edit --allow-unrelated-histories');
           }
 
@@ -332,6 +435,11 @@ export class GitSyncService {
 
           if (pushRes.code !== 0) {
             vscode.window.showErrorMessage(`Git push failed: ${pushRes.stderr || pushRes.stdout}`);
+            this.writeSyncState({
+              inProgress: false,
+              lockExpiresAt: 0
+            });
+            return;
           } else {
             vscode.window.showInformationMessage(`Antigravity sessions merged and synced successfully! (${nowStr})`);
           }

@@ -61,6 +61,9 @@ export class DashboardWebviewPanel {
   private lastActiveSessionMsgCount: number = 0;
   private lastWatchedFileSize: number = 0;
   private lastWatchedFileMtime: number = 0;
+  private isWebviewReady: boolean = false;
+  private pendingReaderUpdate: { sessionId: string; isLiveUpdate?: boolean; forceScrollEdge?: 'top' | 'bottom' | boolean } | null = null;
+  private activeReaderSequenceId: number = 0;
 
   public static createOrShow(
     extensionUri: vscode.Uri,
@@ -160,13 +163,13 @@ export class DashboardWebviewPanel {
       this.panel.webview.html = this.generateSkeletonHtml();
     }
 
-    let isReadyHandled = false;
     const readyFallbackTimer = setTimeout(() => {
-      if (!isReadyHandled) {
-        isReadyHandled = true;
+      if (!this.isWebviewReady) {
+        console.warn('Dashboard webview handshake timed out after 2500ms; falling back to full updateContent()');
+        this.isWebviewReady = true;
         this.updateContent();
       }
-    }, 400);
+    }, 2500);
 
     this.panel.onDidDispose(() => {
       clearTimeout(readyFallbackTimer);
@@ -177,12 +180,14 @@ export class DashboardWebviewPanel {
       async (message) => {
         switch (message.command) {
           case 'dashboardReady':
-            if (!isReadyHandled) {
-              isReadyHandled = true;
-              clearTimeout(readyFallbackTimer);
-              if (this.selectedSessionId) {
-                await this.updateReaderOnly(this.selectedSessionId);
-              }
+            this.isWebviewReady = true;
+            clearTimeout(readyFallbackTimer);
+            if (this.pendingReaderUpdate) {
+              const pending = this.pendingReaderUpdate;
+              this.pendingReaderUpdate = null;
+              await this.updateReaderOnly(pending.sessionId, pending.isLiveUpdate, pending.forceScrollEdge);
+            } else if (this.selectedSessionId) {
+              await this.updateReaderOnly(this.selectedSessionId);
             }
             break;
 
@@ -843,6 +848,13 @@ export class DashboardWebviewPanel {
     isLiveUpdate: boolean = false,
     forceScrollEdge?: 'top' | 'bottom' | boolean
   ): Promise<void> {
+    if (!this.isWebviewReady) {
+      this.pendingReaderUpdate = { sessionId, isLiveUpdate, forceScrollEdge };
+      return;
+    }
+
+    const currentSequenceId = ++this.activeReaderSequenceId;
+
     try {
       const scanner = SessionScanner.getInstance();
       const sessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
@@ -853,6 +865,9 @@ export class DashboardWebviewPanel {
 
       if (this.isShowingCombinedThread) {
         const threadData = await scanner.loadFullThread(sessionId);
+        if (currentSequenceId !== this.activeReaderSequenceId) {
+          return;
+        }
         if (threadData) {
           activeSession = sessions.find((s) => s.id === sessionId);
           activeMessages = threadData.allMessages;
@@ -860,6 +875,9 @@ export class DashboardWebviewPanel {
         }
       } else {
         const sessionData = await scanner.loadFullSession(sessionId);
+        if (currentSequenceId !== this.activeReaderSequenceId) {
+          return;
+        }
         if (sessionData) {
           activeSession = sessionData.session;
           activeMessages = sessionData.messages;
@@ -875,6 +893,10 @@ export class DashboardWebviewPanel {
           threadSessions = sessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId);
           threadSessions.sort((a, b) => (a.createdAt || a.lastModified).getTime() - (b.createdAt || b.lastModified).getTime());
         }
+      }
+
+      if (currentSequenceId !== this.activeReaderSequenceId) {
+        return;
       }
 
       if (!activeSession) {
@@ -1561,6 +1583,17 @@ export class DashboardWebviewPanel {
       </div>
     </div>
   </div>
+  <script>
+    try {
+      const vscode = acquireVsCodeApi();
+      window.addEventListener('DOMContentLoaded', () => {
+        vscode.postMessage({ command: 'dashboardReady' });
+      });
+      if (document.readyState === 'interactive' || document.readyState === 'complete') {
+        vscode.postMessage({ command: 'dashboardReady' });
+      }
+    } catch (e) {}
+  </script>
 </body>
 </html>`;
   }
@@ -1701,6 +1734,13 @@ export class DashboardWebviewPanel {
             --font-mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
             --shimmer-bg: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.12));
             --shimmer-highlight: var(--vscode-editor-inactiveSelectionBackground, rgba(128, 128, 128, 0.22));
+            --mermaid-bg: #18181B;
+            --mermaid-fg: #F4F4F5;
+            --mermaid-line: #71717A;
+            --mermaid-accent: #71717A;
+            --mermaid-muted: #A1A1AA;
+            --mermaid-surface: #27272A;
+            --mermaid-border: #3F3F46;
           }
 
           body.vscode-light {
@@ -1709,6 +1749,23 @@ export class DashboardWebviewPanel {
             --ai-bubble-bg: rgba(0, 0, 0, 0.03);
             --ai-bubble-border: rgba(0, 0, 0, 0.12);
             --code-bg: rgba(0, 0, 0, 0.05);
+            --mermaid-bg: #FFFFFF;
+            --mermaid-fg: #1E293B;
+            --mermaid-line: #64748B;
+            --mermaid-accent: #64748B;
+            --mermaid-muted: #475569;
+            --mermaid-surface: #F8FAFC;
+            --mermaid-border: #CBD5E1;
+          }
+
+          body.vscode-high-contrast {
+            --mermaid-bg: #000000;
+            --mermaid-fg: #FFFFFF;
+            --mermaid-line: #FFFFFF;
+            --mermaid-accent: #38BDF8;
+            --mermaid-muted: #E4E4E7;
+            --mermaid-surface: #09090B;
+            --mermaid-border: #FFFFFF;
           }
 
           * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2921,6 +2978,137 @@ export class DashboardWebviewPanel {
             margin: auto;
           }
 
+/* Fullscreen Modal for Diagrams */
+          .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(9, 13, 22, 0.88);
+            backdrop-filter: blur(8px);
+            z-index: 9999;
+            flex-direction: column;
+            user-select: none;
+          }
+
+          .modal-overlay.active {
+            display: flex;
+          }
+
+          .modal-canvas-viewport {
+            flex: 1;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+            cursor: grab;
+            background-image: radial-gradient(rgba(148, 163, 184, 0.14) 1px, transparent 1px);
+            background-size: 24px 24px;
+          }
+
+          body.vscode-light .modal-canvas-viewport {
+            background-image: radial-gradient(rgba(71, 85, 105, 0.16) 1px, transparent 1px);
+          }
+
+          .modal-canvas-viewport.is-dragging {
+            cursor: grabbing;
+          }
+
+          .modal-canvas-content {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform-origin: 0 0;
+            will-change: transform;
+            padding: 24px;
+          }
+
+          .modal-canvas-content svg {
+            display: block;
+            background: var(--mermaid-bg, var(--bg-secondary)) !important;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg, 8px);
+            padding: 28px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+            max-width: none !important;
+            height: auto !important;
+          }
+
+          .modal-controls {
+            position: fixed;
+            top: 20px;
+            right: 24px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            z-index: 10001;
+            background: var(--bg-secondary);
+            padding: 6px 10px;
+            border-radius: var(--radius-md, 6px);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+          }
+
+          .modal-zoom-badge {
+            font-size: 11px;
+            font-weight: 600;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+            min-width: 46px;
+            text-align: center;
+            padding: 2px 6px;
+            background: var(--code-bg, rgba(0, 0, 0, 0.2));
+            border-radius: var(--radius-sm, 4px);
+            border: 1px solid var(--border-color);
+          }
+
+          .modal-controls-divider {
+            width: 1px;
+            height: 18px;
+            background: var(--border-color);
+            margin: 0 2px;
+          }
+
+          .modal-hint-pill {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 11px;
+            padding: 6px 14px;
+            border-radius: 999px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+            z-index: 10001;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            opacity: 0.85;
+          }
+
+          .modal-close-btn {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            padding: 5px 10px;
+            border-radius: var(--radius-sm, 4px);
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 11.5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+          }
+
+          .modal-close-btn:hover {
+            background: rgba(239, 68, 68, 0.25);
+          }
+
           /* Custom In-Webview Context Menu */
           .custom-context-menu {
             position: fixed;
@@ -3193,17 +3381,73 @@ export class DashboardWebviewPanel {
             gap: 6px;
           }
 
+          .mermaid-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+          }
+
+          .mermaid-btn {
+            background: var(--btn-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.15s ease;
+          }
+
+          .mermaid-btn:hover {
+            background: var(--btn-hover);
+            border-color: var(--border-hover);
+          }
+
+          .mermaid-btn.primary {
+            background: var(--btn-primary-bg);
+            color: var(--btn-primary-fg);
+          }
+
           .mermaid-body {
             padding: 16px;
             display: flex;
             justify-content: safe center;
             overflow-x: auto;
-            background: rgba(0, 0, 0, 0.08);
+            background: var(--mermaid-bg, rgba(0, 0, 0, 0.08));
           }
 
           .mermaid-body svg {
             max-width: 100%;
             height: auto;
+            cursor: pointer;
+          }
+
+          .mermaid-card.scroll-mode .mermaid-body {
+            justify-content: flex-start;
+          }
+
+          .mermaid-card.scroll-mode .mermaid-body svg {
+            max-width: none !important;
+            width: auto !important;
+            min-width: max-content;
+          }
+
+          .mermaid-source-view {
+            display: none;
+            padding: 12px;
+            background: var(--code-bg);
+            border-top: 1px solid var(--border-color);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            white-space: pre-wrap;
+            color: var(--text-primary);
+          }
+
+          .mermaid-source-view.visible {
+            display: block;
           }
 
           /* Prevent SVG text clipping on descenders (y, g, p, q, j) */
@@ -3925,6 +4169,33 @@ export class DashboardWebviewPanel {
           </div>
           <div class="media-modal-content" id="mediaModalContent">
             <img id="mediaModalImg" class="media-modal-img" src="" alt="Enlarged Image / Attachment">
+          </div>
+        </div>
+
+<!-- Fullscreen Diagram Canvas Modal (Pan & Zoom) -->
+        <div class="modal-overlay" id="diagramModal" tabindex="-1">
+          <div class="modal-controls">
+            <button class="mermaid-btn" onclick="zoomModal(0.8)" title="Zoom Out (-)">−</button>
+            <span class="modal-zoom-badge" id="zoomBadge" title="Current Zoom Level">100%</span>
+            <button class="mermaid-btn" onclick="zoomModal(1.25)" title="Zoom In (+)">+</button>
+            <div class="modal-controls-divider"></div>
+            <button class="mermaid-btn" onclick="fitModalToScreen()" title="Fit diagram to screen (0)">Fit</button>
+            <button class="mermaid-btn" onclick="resetModalZoom()" title="Reset to 100% scale (1)">100%</button>
+            <button class="mermaid-btn" onclick="copyModalSvg()" title="Copy rendered SVG code">Copy SVG</button>
+            <div class="modal-controls-divider"></div>
+            <button class="modal-close-btn" onclick="closeModal()" title="Close Fullscreen (Esc)">✕ Close</button>
+          </div>
+          <div class="modal-canvas-viewport" id="modalViewport">
+            <div class="modal-canvas-content" id="modalContent"></div>
+          </div>
+          <div class="modal-hint-pill">
+            <span>🖱️ Scroll wheel to zoom at cursor</span>
+            <span>•</span>
+            <span>✋ Click &amp; drag to pan</span>
+            <span>•</span>
+            <span>⌨️ Double-click to fit</span>
+            <span>•</span>
+            <span>ESC to close</span>
           </div>
         </div>
 
@@ -5714,7 +5985,290 @@ export class DashboardWebviewPanel {
             return false;
           }
 
+          function mountMermaidCard(el, rawCode, renderedSvg) {
+            const encodedRaw = encodeURIComponent(rawCode);
+            el.innerHTML =
+              '<div class="mermaid-card">' +
+                '<div class="mermaid-header">' +
+                  '<span class="mermaid-tag">📊 Mermaid Diagram</span>' +
+                  '<div class="mermaid-actions">' +
+                    '<button class="mermaid-btn" onclick="toggleDiagramFit(this)" title="Toggle 100% scrollable size or fit to width"><span class="fit-label">Scroll</span></button>' +
+                    '<button class="mermaid-btn" onclick="toggleSourceView(this)" title="View Mermaid source code">Code</button>' +
+                    '<button class="copy-code-btn" data-code="' + encodedRaw + '" title="Copy raw Mermaid code">' +
+                      '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">' +
+                        '<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>' +
+                        '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>' +
+                      '</svg>' +
+                      '<span>Copy Code</span>' +
+                    '</button>' +
+                    '<button class="mermaid-btn" onclick="openFullscreen(this)" title="View diagram in fullscreen">🔍 Zoom</button>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="mermaid-body" onclick="openFullscreen(this)" title="Click diagram to open fullscreen zoom">' + renderedSvg + '</div>' +
+                '<div class="mermaid-source-view"><pre><code>' + escapeHtml(rawCode) + '</code></pre></div>' +
+              '</div>';
+          }
+
+          function toggleDiagramFit(btn) {
+            const card = btn && btn.closest ? btn.closest('.mermaid-card') : null;
+            if (!card) return;
+            card.classList.toggle('scroll-mode');
+            const isScroll = card.classList.contains('scroll-mode');
+            const label = btn.querySelector('.fit-label');
+            if (label) label.innerText = isScroll ? 'Fit' : 'Scroll';
+            btn.classList.toggle('primary', isScroll);
+          }
+
+          function toggleSourceView(btn) {
+            const card = btn && btn.closest ? btn.closest('.mermaid-card') : null;
+            if (!card) return;
+            const src = card.querySelector('.mermaid-source-view');
+            if (src) {
+              src.classList.toggle('visible');
+              btn.classList.toggle('primary', src.classList.contains('visible'));
+            }
+          }
+
+          let modalScale = 1;
+          let modalPanX = 0;
+          let modalPanY = 0;
+          let isPanning = false;
+          let startPointerX = 0;
+          let startPointerY = 0;
+
+          function getSvgNaturalDimensions(svg) {
+            let svgW = 0;
+            let svgH = 0;
+            if (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width > 0) {
+              svgW = svg.viewBox.baseVal.width;
+              svgH = svg.viewBox.baseVal.height;
+            } else if (svg.getAttribute('viewBox')) {
+              const parts = svg.getAttribute('viewBox').trim().split(/[\s,]+/);
+              if (parts.length === 4) {
+                svgW = parseFloat(parts[2]);
+                svgH = parseFloat(parts[3]);
+              }
+            }
+            if (!svgW || svgW <= 0) {
+              svgW = svg.scrollWidth || svg.clientWidth || 800;
+            }
+            if (!svgH || svgH <= 0) {
+              svgH = svg.scrollHeight || svg.clientHeight || 600;
+            }
+            return { width: svgW, height: svgH };
+          }
+
+          function applySvgNaturalDimensions(svg, content) {
+            if (!svg) return { width: 800, height: 600, totalW: 848, totalH: 648 };
+            const dims = getSvgNaturalDimensions(svg);
+            const padOffset = 48;
+            const totalW = dims.width + padOffset;
+            const totalH = dims.height + padOffset;
+
+            svg.style.width = dims.width + 'px';
+            svg.style.height = dims.height + 'px';
+            svg.style.maxWidth = 'none';
+            svg.style.minWidth = dims.width + 'px';
+            svg.style.minHeight = dims.height + 'px';
+
+            if (content) {
+              content.style.width = totalW + 'px';
+              content.style.height = totalH + 'px';
+            }
+
+            return { width: dims.width, height: dims.height, totalW: totalW, totalH: totalH };
+          }
+
+          function updateModalTransform() {
+            const content = document.getElementById('modalContent');
+            const badge = document.getElementById('zoomBadge');
+            if (content) {
+              content.style.transform = 'translate(' + modalPanX + 'px, ' + modalPanY + 'px) scale(' + modalScale + ')';
+            }
+            if (badge) {
+              badge.innerText = Math.round(modalScale * 100) + '%';
+            }
+          }
+
+          function openFullscreen(btn) {
+            const card = btn && btn.closest ? btn.closest('.mermaid-card') : null;
+            if (!card) return;
+            const svg = card.querySelector('.mermaid-body svg');
+            if (!svg) return;
+            const modal = document.getElementById('diagramModal');
+            const content = document.getElementById('modalContent');
+            if (!modal || !content) return;
+            content.innerHTML = svg.outerHTML;
+
+            const clonedSvg = content.querySelector('svg');
+            if (clonedSvg) {
+              applySvgNaturalDimensions(clonedSvg, content);
+            }
+
+            modal.classList.add('active');
+            modal.focus();
+            fitModalToScreen();
+            requestAnimationFrame(fitModalToScreen);
+          }
+
+          function closeModal() {
+            const modal = document.getElementById('diagramModal');
+            if (modal) {
+              modal.classList.remove('active');
+            }
+            const content = document.getElementById('modalContent');
+            if (content) {
+              content.innerHTML = '';
+            }
+          }
+
+          function resetModalZoom() {
+            modalScale = 1;
+            centerModalContent();
+            updateModalTransform();
+          }
+
+          function zoomModal(factor) {
+            const viewport = document.getElementById('modalViewport');
+            if (!viewport) return;
+            const rect = viewport.getBoundingClientRect();
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            zoomAtPoint(factor, centerX, centerY);
+          }
+
+          function zoomAtPoint(factor, clientX, clientY) {
+            const oldScale = modalScale;
+            let newScale = oldScale * factor;
+            newScale = Math.max(0.05, Math.min(10, newScale));
+
+            modalPanX = clientX - (clientX - modalPanX) * (newScale / oldScale);
+            modalPanY = clientY - (clientY - modalPanY) * (newScale / oldScale);
+            modalScale = newScale;
+
+            updateModalTransform();
+          }
+
+          function centerModalContent() {
+            const viewport = document.getElementById('modalViewport');
+            const content = document.getElementById('modalContent');
+            const svg = content ? content.querySelector('svg') : null;
+            if (!viewport || !svg) return;
+
+            const dims = applySvgNaturalDimensions(svg, content);
+            const vRect = viewport.getBoundingClientRect();
+
+            modalPanX = (vRect.width - dims.totalW * modalScale) / 2;
+            modalPanY = (vRect.height - dims.totalH * modalScale) / 2;
+          }
+
+          function fitModalToScreen() {
+            const viewport = document.getElementById('modalViewport');
+            const content = document.getElementById('modalContent');
+            const svg = content ? content.querySelector('svg') : null;
+            if (!viewport || !svg) return;
+
+            const dims = applySvgNaturalDimensions(svg, content);
+            const vRect = viewport.getBoundingClientRect();
+            if (vRect.width <= 0 || vRect.height <= 0) return;
+
+            const pad = 80;
+            const availableW = Math.max(50, vRect.width - pad);
+            const availableH = Math.max(50, vRect.height - pad);
+
+            const scaleX = availableW / dims.totalW;
+            const scaleY = availableH / dims.totalH;
+            modalScale = Math.max(0.05, Math.min(1.5, Math.min(scaleX, scaleY)));
+
+            modalPanX = (vRect.width - dims.totalW * modalScale) / 2;
+            modalPanY = (vRect.height - dims.totalH * modalScale) / 2;
+            updateModalTransform();
+          }
+
+          function copyModalSvg() {
+            const content = document.getElementById('modalContent');
+            const svg = content ? content.querySelector('svg') : null;
+            if (svg && navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(svg.outerHTML).then(() => {
+                if (typeof showToast === 'function') showToast('SVG markup copied to clipboard!', 'success');
+              }).catch(() => {});
+            }
+          }
+
+          window.addEventListener('DOMContentLoaded', () => {
+            const viewport = document.getElementById('modalViewport');
+            if (!viewport) return;
+
+            viewport.addEventListener('mousedown', (e) => {
+              if (e.button !== 0) return;
+              isPanning = true;
+              startPointerX = e.clientX - modalPanX;
+              startPointerY = e.clientY - modalPanY;
+              viewport.classList.add('is-dragging');
+            });
+
+            window.addEventListener('mousemove', (e) => {
+              if (!isPanning) return;
+              modalPanX = e.clientX - startPointerX;
+              modalPanY = e.clientY - startPointerY;
+              updateModalTransform();
+            });
+
+            window.addEventListener('mouseup', () => {
+              if (isPanning) {
+                isPanning = false;
+                viewport.classList.remove('is-dragging');
+              }
+            });
+
+            viewport.addEventListener('wheel', (e) => {
+              e.preventDefault();
+              const rect = viewport.getBoundingClientRect();
+              const mouseX = e.clientX - rect.left;
+              const mouseY = e.clientY - rect.top;
+              const factor = e.deltaY < 0 ? 1.12 : 0.89;
+              zoomAtPoint(factor, mouseX, mouseY);
+            }, { passive: false });
+
+            viewport.addEventListener('dblclick', (e) => {
+              if (e.target && e.target.closest && e.target.closest('.modal-controls')) return;
+              fitModalToScreen();
+            });
+          });
+
+          window.addEventListener('keydown', (e) => {
+            const modal = document.getElementById('diagramModal');
+            if (!modal || !modal.classList.contains('active')) return;
+            if (e.key === 'Escape' || e.keyCode === 27) {
+              closeModal();
+            } else if (e.key === '+' || e.key === '=') {
+              zoomModal(1.2);
+            } else if (e.key === '-' || e.key === '_') {
+              zoomModal(0.833);
+            } else if (e.key === '0') {
+              fitModalToScreen();
+            } else if (e.key === '1') {
+              resetModalZoom();
+            }
+          });
+
           async function renderMermaidDiagrams() {
+            const initialContainers = document.querySelectorAll('.mermaid-container:not(.rendered)');
+            if (initialContainers.length === 0) return;
+
+            // Step 1: Synchronously mount pre-rendered beautiful-mermaid SVGs without loading mermaid.min.js
+            for (let i = 0; i < initialContainers.length; i++) {
+              const el = initialContainers[i];
+              const beautifulEncoded = el.getAttribute('data-beautiful-svg') || '';
+              if (beautifulEncoded) {
+                el.classList.add('rendered');
+                const rawCode = decodeURIComponent(el.getAttribute('data-mermaid') || '');
+                const renderedSvg = decodeURIComponent(beautifulEncoded);
+                mountMermaidCard(el, rawCode, renderedSvg);
+              }
+            }
+
+            // Step 2: Fallback to mermaid.min.js only for remaining containers (e.g. mindmap, gantt)
             const pending = document.querySelectorAll('.mermaid-container:not(.rendered)');
             if (pending.length === 0) return;
 
@@ -5812,20 +6366,7 @@ export class DashboardWebviewPanel {
               if (leftover2) leftover2.remove();
 
               if (renderedSvg) {
-                el.innerHTML =
-                  '<div class="mermaid-card">' +
-                    '<div class="mermaid-header">' +
-                      '<span class="mermaid-tag">📊 Mermaid Diagram</span>' +
-                      '<button class="copy-code-btn" data-code="' + encodeURIComponent(rawCode) + '" title="Copy raw Mermaid code">' +
-                        '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">' +
-                          '<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>' +
-                          '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>' +
-                        '</svg>' +
-                        '<span>Copy Code</span>' +
-                      '</button>' +
-                    '</div>' +
-                    '<div class="mermaid-body">' + renderedSvg + '</div>' +
-                  '</div>';
+                mountMermaidCard(el, rawCode, renderedSvg);
               } else {
                 const errMsg = renderErr && renderErr.message ? renderErr.message : String(renderErr || 'Syntax error in diagram definition');
                 const fence = String.fromCharCode(96, 96, 96);

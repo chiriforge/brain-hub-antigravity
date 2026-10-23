@@ -5,7 +5,10 @@ export const KATEX_CSS = KATEX_BASE_CSS;
 export function getKaTeXCss(fontsUri?: string): string {
   let css = KATEX_BASE_CSS;
   if (fontsUri) {
-    const cleanUri = fontsUri.replace(/\/+$/, '');
+    let cleanUri = fontsUri;
+    while (cleanUri.endsWith('/')) {
+      cleanUri = cleanUri.slice(0, -1);
+    }
     // Replace both relative "fonts/..." and full CDN font URLs with properly quoted local Webview URIs
     css = css.replace(
       /url\(\s*["']?(?:fonts\/|https:\/\/cdn\.jsdelivr\.net\/npm\/katex@[^/]+\/dist\/fonts\/)([^)"']+)["']?\s*\)/g,
@@ -106,6 +109,50 @@ export function getKaTeXCss(fontsUri?: string): string {
     .katex .mrel,
     .katex .mbin {
       padding: 0 0.15em;
+    }
+
+    /* Resilient KaTeX Fallback & Error Suppression */
+    .katex-fallback {
+      display: inline-block;
+      padding: 2px 8px;
+      margin: 2px 0;
+      font-family: var(--vscode-editor-font-family, var(--font-mono, Consolas, "Courier New", monospace));
+      font-size: 0.9em;
+      line-height: 1.4;
+      color: var(--vscode-foreground, #cccccc);
+      background: var(--vscode-badge-background, rgba(127, 127, 127, 0.12));
+      border: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, 0.25));
+      border-radius: 4px;
+      white-space: normal;
+      word-break: break-word;
+      user-select: text;
+      cursor: text;
+    }
+
+    .katex-display .katex-fallback {
+      display: inline-block;
+      padding: 8px 16px;
+      font-size: 0.95em;
+      text-align: center;
+      margin: 0 auto;
+    }
+
+    .katex-error {
+      color: inherit !important;
+      background: rgba(239, 68, 68, 0.08) !important;
+      border: 1px solid rgba(239, 68, 68, 0.25) !important;
+      border-radius: 4px !important;
+      padding: 1px 6px !important;
+      font-family: var(--vscode-editor-font-family, monospace) !important;
+      font-size: 0.88em !important;
+      white-space: normal !important;
+      word-break: break-word !important;
+    }
+
+    body.vscode-light .katex-fallback {
+      color: #1e1e1e;
+      background: rgba(0, 0, 0, 0.05);
+      border-color: rgba(0, 0, 0, 0.15);
     }
   `
   );

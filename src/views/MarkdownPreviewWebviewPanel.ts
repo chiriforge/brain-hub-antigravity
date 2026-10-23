@@ -543,6 +543,13 @@ export class MarkdownPreviewWebviewPanel {
       --border-color: #d0d7de;
       --code-bg: #f6f8fa;
       --accent-blue: #0969da;
+      --mermaid-bg: #FFFFFF;
+      --mermaid-fg: #1E293B;
+      --mermaid-line: #64748B;
+      --mermaid-accent: #64748B;
+      --mermaid-muted: #475569;
+      --mermaid-surface: #F8FAFC;
+      --mermaid-border: #CBD5E1;
     }
 
     * {
@@ -955,11 +962,35 @@ export class MarkdownPreviewWebviewPanel {
             --radius-lg: 10px;
             --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
             --font-mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+            --mermaid-bg: #18181B;
+            --mermaid-fg: #F4F4F5;
+            --mermaid-line: #71717A;
+            --mermaid-accent: #71717A;
+            --mermaid-muted: #A1A1AA;
+            --mermaid-surface: #27272A;
+            --mermaid-border: #3F3F46;
           }
 
           body.vscode-light {
             --code-bg: rgba(0, 0, 0, 0.05);
             --border-color: rgba(0, 0, 0, 0.12);
+            --mermaid-bg: #FFFFFF;
+            --mermaid-fg: #1E293B;
+            --mermaid-line: #64748B;
+            --mermaid-accent: #64748B;
+            --mermaid-muted: #475569;
+            --mermaid-surface: #F8FAFC;
+            --mermaid-border: #CBD5E1;
+          }
+
+          body.vscode-high-contrast {
+            --mermaid-bg: #000000;
+            --mermaid-fg: #FFFFFF;
+            --mermaid-line: #FFFFFF;
+            --mermaid-accent: #38BDF8;
+            --mermaid-muted: #E4E4E7;
+            --mermaid-surface: #09090B;
+            --mermaid-border: #FFFFFF;
           }
 
           * {
@@ -1289,6 +1320,7 @@ export class MarkdownPreviewWebviewPanel {
           .mermaid-body svg {
             max-width: 100%;
             height: auto;
+            cursor: pointer;
             transition: transform 0.2s ease;
             transform-origin: center center;
           }
@@ -1571,7 +1603,7 @@ export class MarkdownPreviewWebviewPanel {
             display: block;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
             border-radius: var(--radius-md);
-            background: var(--bg-secondary);
+            background: var(--mermaid-bg, var(--bg-secondary)) !important;
             border: 1px solid var(--border-color);
             padding: 24px;
             box-sizing: content-box;
@@ -2495,7 +2527,40 @@ export class MarkdownPreviewWebviewPanel {
             return mermaidLoadingPromise;
           }
 
+          function mountPreviewMermaidCard(el, rawCode, renderedSvg) {
+            const encodedRaw = encodeURIComponent(rawCode);
+            el.innerHTML =
+              '<div class="mermaid-card">' +
+                '<div class="mermaid-header">' +
+                  '<span class="mermaid-tag"><i class="codicon codicon-graph"></i> Mermaid Diagram (' + (currentMermaidMode === 'sanitized' ? '✨ Sanitized' : '📄 Original') + ')</span>' +
+                  '<div class="mermaid-actions">' +
+                    '<button class="mermaid-btn" onclick="toggleDiagramFit(this)" title="Toggle 100% scrollable size or fit to width"><i class="codicon codicon-arrow-both"></i> <span class="fit-label">Scroll</span></button>' +
+                    '<button class="mermaid-btn" onclick="toggleSourceView(this)" title="View Mermaid source code"><i class="codicon codicon-code"></i> Source</button>' +
+                    '<button class="mermaid-btn" data-raw-code="' + escapeHtml(encodedRaw) + '" onclick="copyMermaidCode(this)" title="Copy raw Mermaid code"><i class="codicon codicon-copy"></i> Copy</button>' +
+                    '<button class="mermaid-btn" onclick="openFullscreen(this)" title="View diagram in fullscreen"><i class="codicon codicon-screen-full"></i> Fullscreen</button>' +
+                  '</div>' +
+                '</div>' +
+                '<div class="mermaid-body" onclick="openFullscreen(this)" title="Click diagram to open fullscreen zoom">' + renderedSvg + '</div>' +
+                '<div class="mermaid-source-view"><pre><code>' + escapeHtml(rawCode) + '</code></pre></div>' +
+              '</div>';
+          }
+
           async function renderMermaidDiagrams() {
+            const initialContainers = document.querySelectorAll('.mermaid-container:not(.rendered)');
+            if (initialContainers.length === 0) return;
+
+            if (currentMermaidMode !== 'original') {
+              for (const el of initialContainers) {
+                const beautifulEncoded = el.getAttribute('data-beautiful-svg') || '';
+                if (beautifulEncoded) {
+                  el.classList.add('rendered');
+                  const rawCode = decodeURIComponent(el.getAttribute('data-mermaid') || '');
+                  const renderedSvg = decodeURIComponent(beautifulEncoded);
+                  mountPreviewMermaidCard(el, rawCode, renderedSvg);
+                }
+              }
+            }
+
             const containers = document.querySelectorAll('.mermaid-container:not(.rendered)');
             if (containers.length === 0) return;
 
@@ -2575,22 +2640,7 @@ export class MarkdownPreviewWebviewPanel {
               try {
                 const res = await mermaid.render(uniqueId, codeToRender);
                 const renderedSvg = res.svg;
-                const encodedRaw = encodeURIComponent(rawCode);
-
-                el.innerHTML =
-                  '<div class="mermaid-card">' +
-                    '<div class="mermaid-header">' +
-                      '<span class="mermaid-tag"><i class="codicon codicon-graph"></i> Mermaid Diagram (' + (currentMermaidMode === 'sanitized' ? '✨ Sanitized' : '📄 Original') + ')</span>' +
-                      '<div class="mermaid-actions">' +
-                        '<button class="mermaid-btn" onclick="toggleDiagramFit(this)" title="Toggle 100% scrollable size or fit to width"><i class="codicon codicon-arrow-both"></i> <span class="fit-label">Scroll</span></button>' +
-                        '<button class="mermaid-btn" onclick="toggleSourceView(this)" title="View Mermaid source code"><i class="codicon codicon-code"></i> Source</button>' +
-                        '<button class="mermaid-btn" data-raw-code="' + escapeHtml(encodedRaw) + '" onclick="copyMermaidCode(this)" title="Copy raw Mermaid code"><i class="codicon codicon-copy"></i> Copy</button>' +
-                        '<button class="mermaid-btn" onclick="openFullscreen(this)" title="View diagram in fullscreen"><i class="codicon codicon-screen-full"></i> Fullscreen</button>' +
-                      '</div>' +
-                    '</div>' +
-                    '<div class="mermaid-body">' + renderedSvg + '</div>' +
-                    '<div class="mermaid-source-view"><pre><code>' + escapeHtml(rawCode) + '</code></pre></div>' +
-                  '</div>';
+                mountPreviewMermaidCard(el, rawCode, renderedSvg);
               } catch (renderErr) {
                 const tempEl = document.getElementById('d' + uniqueId);
                 if (tempEl) tempEl.remove();

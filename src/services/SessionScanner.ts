@@ -77,16 +77,35 @@ export class SessionScanner {
     return path.join(this.getDefaultBrainDirectory(), '.sessions_scan.lock');
   }
 
+  public isProcessAlive(pid: number): boolean {
+    if (!pid || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err: any) {
+      return err && err.code === 'EPERM';
+    }
+  }
+
   private acquireScanLock(ttlMs: number = 15000): boolean {
     const lockFile = this.getScanLockFilePath();
     const now = Date.now();
     try {
       if (fs.existsSync(lockFile)) {
         const raw = fs.readFileSync(lockFile, 'utf8');
-        const lockData = JSON.parse(raw);
-        if (lockData && lockData.expiresAt && now < lockData.expiresAt && lockData.pid !== process.pid) {
-          // Another window is actively scanning
-          return false;
+        if (raw && raw.trim().length > 0) {
+          const lockData = JSON.parse(raw);
+          if (lockData && lockData.expiresAt && now < lockData.expiresAt && lockData.pid !== process.pid) {
+            if (this.isProcessAlive(lockData.pid)) {
+              // Another window is actively scanning
+              return false;
+            }
+            // Dead process PID -> prune orphaned lock immediately
+            console.log(`Pruning orphaned scan lock from dead PID ${lockData.pid}`);
+            try {
+              fs.unlinkSync(lockFile);
+            } catch {}
+          }
         }
       }
       const parentDir = path.dirname(lockFile);
@@ -108,7 +127,7 @@ export class SessionScanner {
     }
   }
 
-  private releaseScanLock(): void {
+  public releaseScanLock(): void {
     const lockFile = this.getScanLockFilePath();
     try {
       if (fs.existsSync(lockFile)) {
@@ -254,6 +273,61 @@ export class SessionScanner {
     return this.filterAndSortSessions(sessions, includeEmpty);
   }
 
+  private purgeDanglingTempFiles(dir: string, maxAgeMs: number = 300000): void {
+    try {
+      if (!fs.existsSync(dir)) return;
+      const files = fs.readdirSync(dir);
+      const now = Date.now();
+      for (const file of files) {
+        if (file.endsWith('.tmp')) {
+          const fullPath = path.join(dir, file);
+          try {
+            const stat = fs.statSync(fullPath);
+            if (now - stat.mtimeMs > maxAgeMs) {
+              fs.unlinkSync(fullPath);
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  private atomicWriteJsonFile(targetPath: string, rawData: string): void {
+    const parentDir = path.dirname(targetPath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpFile, rawData, 'utf8');
+
+    let renamed = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.renameSync(tmpFile, targetPath);
+        renamed = true;
+        break;
+      } catch (err: any) {
+        if (err && (err.code === 'EBUSY' || err.code === 'EPERM')) {
+          const waitTill = Date.now() + 15 * (attempt + 1);
+          while (Date.now() < waitTill) {}
+        } else {
+          break;
+        }
+      }
+    }
+    if (!renamed) {
+      try {
+        fs.copyFileSync(tmpFile, targetPath);
+        fs.unlinkSync(tmpFile);
+      } catch {
+        fs.writeFileSync(targetPath, rawData, 'utf8');
+        try {
+          if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+        } catch {}
+      }
+    }
+  }
+
   public saveCacheToDisk(): void {
     if (this.saveCacheDebounceTimer) {
       clearTimeout(this.saveCacheDebounceTimer);
@@ -262,23 +336,18 @@ export class SessionScanner {
     try {
       const cacheFile = this.getCacheFilePath();
       const parentDir = path.dirname(cacheFile);
-      if (!fs.existsSync(parentDir)) {
-        fs.mkdirSync(parentDir, { recursive: true });
-      }
-      const entries = Array.from(this.sessionCache.values());
-      const rawData = JSON.stringify(entries);
-      const tmpFile = `${cacheFile}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmpFile, rawData, 'utf8');
-      try {
-        fs.renameSync(tmpFile, cacheFile);
-      } catch {
-        fs.writeFileSync(cacheFile, rawData, 'utf8');
-        try {
-          if (fs.existsSync(tmpFile)) {
-            fs.unlinkSync(tmpFile);
-          }
-        } catch {}
-      }
+      this.purgeDanglingTempFiles(parentDir);
+
+      // Filter out deleted sessions to prevent zombie resurrection across concurrent windows
+      const validEntries = Array.from(this.sessionCache.values()).filter((item) => {
+        if (!item || !item.session) return false;
+        if (!item.session.path) return true;
+        return fs.existsSync(item.session.path);
+      });
+
+      const rawData = JSON.stringify(validEntries);
+      this.atomicWriteJsonFile(cacheFile, rawData);
+
       if (fs.existsSync(cacheFile)) {
         this.lastDiskCacheMtime = fs.statSync(cacheFile).mtimeMs;
       }
@@ -286,10 +355,11 @@ export class SessionScanner {
       // Also mirror to shared brain root cache file so all IDE instances stay in sync
       const brainDir = this.getDefaultBrainDirectory();
       if (brainDir) {
+        this.purgeDanglingTempFiles(brainDir);
         const brainCacheFile = path.join(brainDir, '.sessions_index_cache.json');
         if (brainCacheFile !== cacheFile) {
           try {
-            fs.writeFileSync(brainCacheFile, rawData, 'utf8');
+            this.atomicWriteJsonFile(brainCacheFile, rawData);
           } catch {}
         }
       }
@@ -474,9 +544,20 @@ export class SessionScanner {
     return true;
   }
 
+  private queuedForceScan: boolean = false;
+
   public async scanSessions(forceRefresh: boolean = false, includeEmpty?: boolean): Promise<ChatSession[]> {
     if (this.activeScanPromise) {
-      return this.activeScanPromise;
+      if (forceRefresh) {
+        this.queuedForceScan = true;
+      }
+      return this.activeScanPromise.then(() => {
+        if (this.queuedForceScan) {
+          this.queuedForceScan = false;
+          return this.scanSessions(true, includeEmpty);
+        }
+        return this.getCachedSessions(includeEmpty);
+      });
     }
 
     this.activeScanPromise = (async () => {
@@ -806,6 +887,39 @@ export class SessionScanner {
     );
   }
 
+  public async parseTranscriptFileAsync(targetFile: string, sessionId: string, metadataOnly: boolean = false): Promise<{
+    messages: ChatMessage[];
+    firstPrompt: string;
+    allPrompts: string[];
+    searchKeywords: string;
+    userPromptCount: number;
+    detectedWorkspace?: string;
+    detectedMachine?: string;
+    createdAt?: Date;
+    lastMsgTime?: Date;
+    detectedParentId?: string;
+  }> {
+    let effectiveTargetFile = targetFile;
+    if (!metadataOnly && targetFile.endsWith('transcript.jsonl')) {
+      const fullTranscriptPath = path.join(path.dirname(targetFile), 'transcript_full.jsonl');
+      if (fs.existsSync(fullTranscriptPath)) {
+        try {
+          const st = await fs.promises.stat(fullTranscriptPath);
+          if (st.size > 0) {
+            effectiveTargetFile = fullTranscriptPath;
+          }
+        } catch {}
+      }
+    }
+
+    const rawContent = await fs.promises.readFile(effectiveTargetFile, 'utf8');
+    const lines = rawContent.split(/\r?\n/);
+    if (lines.length > 500) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return this.parseTranscriptContent(lines, sessionId, metadataOnly);
+  }
+
   public parseTranscriptFile(targetFile: string, sessionId: string, metadataOnly: boolean = false): {
     messages: ChatMessage[];
     firstPrompt: string;
@@ -833,6 +947,21 @@ export class SessionScanner {
 
     const rawContent = fs.readFileSync(effectiveTargetFile, 'utf8');
     const lines = rawContent.split(/\r?\n/);
+    return this.parseTranscriptContent(lines, sessionId, metadataOnly);
+  }
+
+  private parseTranscriptContent(lines: string[], sessionId: string, metadataOnly: boolean): {
+    messages: ChatMessage[];
+    firstPrompt: string;
+    allPrompts: string[];
+    searchKeywords: string;
+    userPromptCount: number;
+    detectedWorkspace?: string;
+    detectedMachine?: string;
+    createdAt?: Date;
+    lastMsgTime?: Date;
+    detectedParentId?: string;
+  } {
 
     const rawSteps: any[] = [];
     let firstPrompt = '';
@@ -1139,7 +1268,7 @@ export class SessionScanner {
 
     if (targetFile) {
       try {
-        parsed = this.parseTranscriptFile(targetFile, sessionId, true);
+        parsed = await this.parseTranscriptFileAsync(targetFile, sessionId, true);
       } catch (err) {
         console.warn(`Could not read transcript for session ${sessionId}:`, err);
       }
@@ -1308,7 +1437,7 @@ export class SessionScanner {
     } catch {}
 
     // Single-pass parse for full messages and metadata
-    const parsed = this.parseTranscriptFile(targetFile, sessionId, false);
+    const parsed = await this.parseTranscriptFileAsync(targetFile, sessionId, false);
     const session = this.buildSessionFromParsed(sessionId, sessionPath, foundStats.mtime, parsed);
     session.messageCount = parsed.messages.length;
 

@@ -15,7 +15,7 @@
 
 Tiện ích mở rộng cho VS Code và Google DeepMind Antigravity IDE dùng để duyệt, tìm kiếm, khôi phục, lưu trữ tài liệu và đồng bộ các phiên làm việc Antigravity Brain giữa các máy tính.
 
-[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity) | [Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity) | [Hướng Dẫn Sử Dụng (Tiếng Việt)](./USER_GUIDE_VI.md) | [User Guide (English)](./USER_GUIDE.md) | [Tài Liệu Kiến Trúc & Phát Triển](./ARCHITECTURE.md)
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity) | [Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity) | [Hướng Dẫn Sử Dụng (Tiếng Việt)](./USER_GUIDE_VI.md) | [User Guide (English)](./USER_GUIDE.md) | [Tài Liệu Kiến Trúc & Phát Triển](./ARCHITECTURE.md) | [Lịch Sử Phiên Bản](./CHANGELOG.md)
 
 <p align="center">
   <img src="./media/showcase-chat-reader.png" alt="Minh họa Giao diện Brain Hub Chat Reader Webview" width="100%">
@@ -33,10 +33,12 @@ Tiện ích mở rộng cho VS Code và Google DeepMind Antigravity IDE dùng đ
 
 ---
 
-## Điểm Mới trong v0.5.2
-- **Session Artifacts Gallery**: Trình xem lưới album với lightbox và xuất tài liệu sang `.docs/assets/`.
-- **Mermaid Rendering**: Khắc phục độ tương phản màu chữ theme tối và căn chỉnh nhãn.
-- **Webview Selection**: Hỗ trợ bôi đen chọn văn bản và menu chuột phải sao chép.
+## Điểm Mới trong v0.5.3
+- **Mermaid Diagram Rendering**: Tích hợp `beautiful-mermaid` vẽ sơ đồ SVG đường vuông góc, tự động ngắt dòng nhãn dài và khung phóng to/kéo thả toàn màn hình.
+- **LaTeX / KaTeX Rendering**: Khắc phục lỗi nhận diện nhầm tiền tệ/biến môi trường với công thức toán, tiền xử lý cú pháp và hiển thị fallback badge.
+- **Multi-IDE Concurrency, Crash Recovery & Git Auto-Sync**: Khắc phục lỗi treo webview khi mở nhiều IDE, tự động dọn lock mồ côi, ghi cache nguyên tử và chống xung đột đồng bộ Git đa máy.
+
+*Lịch sử phiên bản đầy đủ: [CHANGELOG.md](./CHANGELOG.md)*
 
 ---
 
@@ -111,7 +113,7 @@ code --install-extension chiriforge.brain-hub-antigravity
 
 Hoặc cài qua dòng lệnh:
 ```bash
-code --install-extension brain-hub-antigravity-0.5.1.vsix
+code --install-extension brain-hub-antigravity-0.5.3.vsix
 ```
 
 ### Chạy từ mã nguồn

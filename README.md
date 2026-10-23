@@ -15,7 +15,7 @@
 
 An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, resume, archive, and sync local Antigravity brain sessions.
 
-[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity) | [Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity) | [User Guide (English)](./USER_GUIDE.md) | [User Guide (Tiếng Việt)](./USER_GUIDE_VI.md) | [Architecture & Developer Guide](./ARCHITECTURE.md)
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=chiriforge.brain-hub-antigravity) | [Open VSX Registry](https://open-vsx.org/extension/chiriforge/brain-hub-antigravity) | [User Guide (English)](./USER_GUIDE.md) | [User Guide (Tiếng Việt)](./USER_GUIDE_VI.md) | [Architecture & Developer Guide](./ARCHITECTURE.md) | [Changelog](./CHANGELOG.md)
 
 <p align="center">
   <img src="./media/showcase-chat-reader.png" alt="Brain Hub Chat Reader Webview Showcase" width="100%">
@@ -33,10 +33,12 @@ An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, 
 
 ---
 
-## What's New in v0.5.2
-- **Session Artifacts Gallery**: Album grid viewer with lightbox and asset export.
-- **Mermaid Rendering**: Fixed dark theme contrast and label alignment.
-- **Webview Selection**: Enabled text selection and right-click copy.
+## What's New in v0.5.3
+- **Mermaid Diagram Rendering**: Integrated `beautiful-mermaid` orthogonal SVG layout, smart multi-line word wrapping, and interactive fullscreen pan/zoom canvas.
+- **LaTeX / KaTeX Rendering**: Fixed inline math vs. currency/shell-variable disambiguation, syntax pre-sanitization, and fallback badges.
+- **Multi-IDE Concurrency, Crash Recovery & Git Auto-Sync**: Fixed webview handshake freezes, orphaned lock cleanup, atomic cache writes, and multi-machine Git sync conflicts.
+
+*Full release history: [CHANGELOG.md](./CHANGELOG.md)*
 
 ---
 
@@ -111,7 +113,7 @@ code --install-extension chiriforge.brain-hub-antigravity
 
 Or install via terminal:
 ```bash
-code --install-extension brain-hub-antigravity-0.5.1.vsix
+code --install-extension brain-hub-antigravity-0.5.3.vsix
 ```
 
 ### Build from Source

@@ -33,10 +33,11 @@ Tiện ích mở rộng cho VS Code và Google DeepMind Antigravity IDE dùng đ
 
 ---
 
-## Điểm Mới trong v0.5.3
-- **Mermaid Diagram Rendering**: Tích hợp `beautiful-mermaid` vẽ sơ đồ SVG đường vuông góc, tự động ngắt dòng nhãn dài và khung phóng to/kéo thả toàn màn hình.
-- **LaTeX / KaTeX Rendering**: Khắc phục lỗi nhận diện nhầm tiền tệ/biến môi trường với công thức toán, tiền xử lý cú pháp và hiển thị fallback badge.
-- **Multi-IDE Concurrency, Crash Recovery & Git Auto-Sync**: Khắc phục lỗi treo webview khi mở nhiều IDE, tự động dọn lock mồ côi, ghi cache nguyên tử và chống xung đột đồng bộ Git đa máy.
+## Điểm Mới trong v0.5.4
+- **Token Usage, Cost Telemetry & Compact Header**: Theo dõi token/chi phí gần thời gian thực trên Status Bar HUD và biểu đồ webview 3 tầng, cấu hình đơn giá và ngưỡng context theo từng model (`brainHub.modelPricing`), cùng header gọn 13px tự thu nhỏ khi cuộn.
+- **Multi-Executor Live Progress & Subagent Tree**: Hiển thị tiến trình 3 lớp cho các phiên `/boost`, `/teamwork`, `/swarm` và `invoke_subagent` với cây subagent thu gọn được ở Sidebar/Nav, Executor Switcher, Execution Progress Matrix, Swarm Board và tổng hợp `treeTokenUsage`.
+- **Workspace-Aware Auto-Load & Split-Session Merging**: Tự động mở phiên mới nhất theo workspace qua pipeline 4 tầng, hợp nhất phân mảnh phiên bị tách giữa các thư mục brain, cập nhật live reader giữ nguyên vị trí cuộn và watch đệ quy trên Windows NTFS.
+- **Cross-Machine Attribution, Git-Aware Sync & Rendering Fixes**: Bổ sung `.brainhub_meta.json` định danh máy tạo phiên, tự nhận diện nhánh và thư mục `brain` chứa `.git` khi đồng bộ, cùng các bản sửa bảng Markdown, hiển thị checkpoint summary và khử nhiễu khi export.
 
 *Lịch sử phiên bản đầy đủ: [CHANGELOG.md](./CHANGELOG.md)*
 
@@ -113,7 +114,7 @@ code --install-extension chiriforge.brain-hub-antigravity
 
 Hoặc cài qua dòng lệnh:
 ```bash
-code --install-extension brain-hub-antigravity-0.5.3.vsix
+code --install-extension brain-hub-antigravity-0.5.4.vsix
 ```
 
 ### Chạy từ mã nguồn

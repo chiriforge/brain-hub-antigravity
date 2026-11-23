@@ -43,14 +43,9 @@ export class ProjectDocsArchiver {
 
     const scanner = SessionScanner.getInstance();
     const allSessions = await scanner.scanSessions();
-    const wsLower = ws.toLowerCase().replace(/\\/g, '/');
 
     // Filter sessions matching workspace
-    const wsSessions = allSessions.filter((s) => {
-      if (!s.workspacePath) return false;
-      const sWsLower = s.workspacePath.toLowerCase().replace(/\\/g, '/');
-      return sWsLower === wsLower || wsLower.startsWith(sWsLower) || sWsLower.startsWith(wsLower);
-    });
+    const wsSessions = allSessions.filter((s) => SessionScanner.isPathBoundaryMatch(s.workspacePath, ws));
 
     if (wsSessions.length === 0) {
       return {
@@ -98,6 +93,13 @@ export class ProjectDocsArchiver {
     });
 
     let latestMarkdown = '';
+    const isSanitized = mode === 'fullRaw' ? false : (mode === 'fullWithSanitization' ? true : sanitizeSecrets);
+    const binaryExts = new Set([
+      '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.ico',
+      '.mp4', '.webm', '.mov', '.mkv', '.pdf', '.zip', '.gz',
+      '.tar', '.7z', '.exe', '.dll', '.so', '.dylib', '.woff',
+      '.woff2', '.ttf', '.eot'
+    ]);
 
     for (const session of sortedSessions) {
       const sessionData = await scanner.loadFullSession(session.id);
@@ -167,12 +169,30 @@ export class ProjectDocsArchiver {
 
             try {
               const destFile = path.join(destFolder, destFileName);
-              await fs.promises.copyFile(art.filePath, destFile);
-              copiedArtifactsCount++;
+              const isTextArtifact =
+                art.category !== 'image' &&
+                art.category !== 'video' &&
+                art.source !== 'user_uploaded' &&
+                !binaryExts.has(ext);
 
-              // Also maintain latest un-prefixed version for active plans/walkthroughs
-              if (lowerName === 'implementation_plan.md' || lowerName === 'walkthrough.md') {
-                await fs.promises.copyFile(art.filePath, path.join(destFolder, art.name));
+              if (isSanitized && isTextArtifact) {
+                const rawArtContent = await fs.promises.readFile(art.filePath, 'utf8');
+                const sanitizedArtContent = SecretSanitizer.sanitize(rawArtContent, customPatterns);
+                await fs.promises.writeFile(destFile, sanitizedArtContent, 'utf8');
+                copiedArtifactsCount++;
+
+                // Also maintain latest un-prefixed version for active plans/walkthroughs
+                if (lowerName === 'implementation_plan.md' || lowerName === 'walkthrough.md') {
+                  await fs.promises.writeFile(path.join(destFolder, art.name), sanitizedArtContent, 'utf8');
+                }
+              } else {
+                await fs.promises.copyFile(art.filePath, destFile);
+                copiedArtifactsCount++;
+
+                // Also maintain latest un-prefixed version for active plans/walkthroughs
+                if (lowerName === 'implementation_plan.md' || lowerName === 'walkthrough.md') {
+                  await fs.promises.copyFile(art.filePath, path.join(destFolder, art.name));
+                }
               }
 
               // Register in assetMap for markdown link rewriting
@@ -192,7 +212,6 @@ export class ProjectDocsArchiver {
 
       // 2. Process Logs if not in safeDocsOnly mode
       if (mode !== 'safeDocsOnly') {
-        const isSanitized = mode === 'fullWithSanitization' || sanitizeSecrets;
         let sessionMd = MarkdownExporter.generateMarkdown(
           sessionData.session,
           sessionData.messages,
@@ -209,7 +228,7 @@ export class ProjectDocsArchiver {
         await fs.promises.writeFile(logFilePath, sessionMd, 'utf8');
         archivedLogsCount++;
 
-        // Compute timeline metrics with links
+        // Compute timeline metrics with links (TIMELINE.md in full modes is located inside .docs/logs/)
         let toolCount = 0;
         for (const m of sessionData.messages) {
           if (m.toolCalls) toolCount += m.toolCalls.length;
@@ -220,7 +239,7 @@ export class ProjectDocsArchiver {
           goal = SecretSanitizer.sanitize(goal, customPatterns);
         }
         timelineRows.push(
-          `| \`${dateDisplay}\` | [\`${session.id.substring(0, 8)}...\`](./logs/${encodeURIComponent(logFileName)}) | ${goal} | \`${sessionData.messages.length}\` | \`${session.userPromptCount}\` | \`${toolCount}\` |`
+          `| \`${dateDisplay}\` | [\`${session.id.substring(0, 8)}...\`](./${encodeURIComponent(logFileName)}) | ${goal} | \`${sessionData.messages.length}\` | \`${session.userPromptCount}\` | \`${toolCount}\` |`
         );
       } else {
         // Safe mode timeline (no links to raw logs)
@@ -230,7 +249,7 @@ export class ProjectDocsArchiver {
         }
         const dateDisplay = (session.createdAt || session.lastModified).toLocaleString('en-US');
         let goal = (session.firstPrompt || session.title || 'Session Task').replace(/[`|\\]/g, ' ').substring(0, 70);
-        if (sanitizeSecrets) {
+        if (isSanitized) {
           goal = SecretSanitizer.sanitize(goal, customPatterns);
         }
         timelineRows.push(
@@ -244,11 +263,18 @@ export class ProjectDocsArchiver {
       await fs.promises.writeFile(path.join(logsDir, 'LATEST_SESSION.md'), latestMarkdown, 'utf8');
     }
 
+    const timelineModeLabel =
+      mode === 'safeDocsOnly'
+        ? '🛡️ Safe Architecture Docs Only'
+        : isSanitized
+          ? '📋 Full Session Archive (Sanitized)'
+          : '📋 Full Session Archive (Raw)';
+
     // Write TIMELINE.md
     const timelineContent = `# 📜 Antigravity Project Session Timeline
 
 Cumulative historical log of all Antigravity development sessions in this project.
-Mode: **${mode === 'safeDocsOnly' ? '🛡️ Safe Architecture Docs Only' : '📋 Full Session Archive (Sanitized)'}**
+Mode: **${timelineModeLabel}**
 
 | Timestamp | Session ID | Goal / Objective | Total Steps | Prompts | Tools |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -261,11 +287,11 @@ ${timelineRows.reverse().join('\n')}
     await fs.promises.writeFile(timelinePath, timelineContent, 'utf8');
 
     // Generate INDEX.md
-    await ProjectDocsArchiver.generateIndexMarkdown(docsDir, ws, mode);
+    await ProjectDocsArchiver.generateIndexMarkdown(docsDir, ws, mode, isSanitized);
 
     const modeMsg = mode === 'safeDocsOnly' 
       ? `Archived ${copiedArtifactsCount} safe artifacts (Plans, Walkthroughs, Diagrams). Raw logs skipped for security.`
-      : `Archived ${archivedLogsCount} sanitized session logs and ${copiedArtifactsCount} artifacts into .docs/`;
+      : `Archived ${archivedLogsCount} ${isSanitized ? 'sanitized' : 'raw'} session logs and ${copiedArtifactsCount} artifacts into .docs/`;
 
     return {
       success: true,
@@ -307,14 +333,17 @@ ${timelineRows.reverse().join('\n')}
     return false;
   }
 
-  private static async generateIndexMarkdown(docsDir: string, wsPath: string, mode: ArchiverMode = 'safeDocsOnly'): Promise<void> {
+  private static async generateIndexMarkdown(docsDir: string, wsPath: string, mode: ArchiverMode = 'safeDocsOnly', isSanitized: boolean = true): Promise<void> {
     const wsName = path.basename(wsPath);
     const lines: string[] = [];
+    const modeLabel = mode === 'safeDocsOnly'
+      ? '🛡️ Safe Architecture Docs Only'
+      : (mode === 'fullRaw' || !isSanitized ? '📋 Full Catalog (Raw)' : '📋 Full Catalog (Sanitized)');
 
     lines.push(`# 📚 Project Documentation Catalog — ${wsName}`);
     lines.push('');
     lines.push('> Automatically generated and organized by **Brain Hub for Antigravity**.');
-    lines.push(`> Archival Mode: **${mode === 'safeDocsOnly' ? '🛡️ Safe Architecture Docs Only' : '📋 Full Catalog (Sanitized)'}**`);
+    lines.push(`> Archival Mode: **${modeLabel}**`);
     lines.push('');
     lines.push('---');
     lines.push('');
@@ -367,7 +396,12 @@ ${timelineRows.reverse().join('\n')}
       lines.push('');
     }
 
-    if (fs.existsSync(path.join(docsDir, 'TIMELINE.md'))) {
+    if (mode !== 'safeDocsOnly' && fs.existsSync(path.join(docsDir, 'logs', 'TIMELINE.md'))) {
+      lines.push('## 📜 Project Timeline');
+      lines.push('');
+      lines.push('- [View Development Session Timeline](./logs/TIMELINE.md)');
+      lines.push('');
+    } else if (fs.existsSync(path.join(docsDir, 'TIMELINE.md'))) {
       lines.push('## 📜 Project Timeline');
       lines.push('');
       lines.push('- [View Development Session Timeline](./TIMELINE.md)');

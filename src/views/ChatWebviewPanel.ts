@@ -1,14 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ChatMessage, ChatSession, ToolCallInfo } from '../models/types';
+import { ChatMessage, ChatSession, SwarmSessionData, ToolCallInfo } from '../models/types';
 import { SessionScanner } from '../services/SessionScanner';
+import { TokenUsageMonitor } from '../services/TokenUsageMonitor';
 import { MarkdownRenderer } from '../services/MarkdownRenderer';
 import { MarkdownExporter } from '../services/MarkdownExporter';
 import { KATEX_CSS, getKaTeXCss } from '../services/KaTeXStyles';
 import { HIGHLIGHT_CSS } from '../services/HighlightStyles';
 import { DashboardWebviewPanel } from './DashboardWebviewPanel';
 import { MarkdownPreviewWebviewPanel } from './MarkdownPreviewWebviewPanel';
+import { HeaderLayoutHelper } from './HeaderLayoutHelper';
+import { ExecutorLayoutHelper } from './ExecutorLayoutHelper';
 
 export class ChatWebviewPanel {
   public static currentPanels: Map<string, ChatWebviewPanel> = new Map();
@@ -17,10 +20,15 @@ export class ChatWebviewPanel {
   private disposables: vscode.Disposable[] = [];
   private currentSession: ChatSession;
   private isShowingCombinedThread: boolean = false;
+  private activeExecutorTab: 'transcript' | 'progress' | 'swarm' = 'transcript';
+  private activeSequenceId: number = 0;
+  private allSessionsCache: ChatSession[] = [];
   private sessionWatcher?: fs.FSWatcher;
+  private swarmWatcher?: fs.FSWatcher;
   private sessionPollingTimer?: NodeJS.Timeout;
   private reloadDebounceTimer?: NodeJS.Timeout;
   private lastContentSignature: string = '';
+  private lastTreeChangeSignature: string = '';
   private isHtmlInitialized: boolean = false;
   private lastWatchedFileSize: number = 0;
   private lastWatchedFileMtime: number = 0;
@@ -142,13 +150,26 @@ export class ChatWebviewPanel {
             }
             break;
 
-          case 'openSessionById':
+          case 'openSessionById': {
             const allSessions = await SessionScanner.getInstance().scanSessions();
-            const target = allSessions.find((s) => s.id === message.sessionId);
+            let target = allSessions.find((s) => s.id === message.sessionId);
+            if (!target && message.sessionId) {
+              const loaded = await SessionScanner.getInstance().loadFullSession(message.sessionId);
+              target = loaded?.session;
+            }
             if (target) {
               ChatWebviewPanel.createOrShow(this.extensionUri, target);
             }
             break;
+          }
+
+          case 'toggleExecutorTab': {
+            const tab = message.tab;
+            this.activeExecutorTab = tab === 'progress' || tab === 'swarm' ? tab : 'transcript';
+            this.lastContentSignature = '';
+            await this.updateContent(false);
+            break;
+          }
 
           case 'toggleCombinedThread':
             this.isShowingCombinedThread = !this.isShowingCombinedThread;
@@ -161,6 +182,12 @@ export class ChatWebviewPanel {
             await vscode.workspace.getConfiguration('brainHub').update('messageOrder', newOrder, vscode.ConfigurationTarget.Global);
             await this.updateContent();
             break;
+
+          case 'setHeaderCollapsed': {
+            const nextState = message.collapsed ? 'collapsed' : 'expanded';
+            await vscode.workspace.getConfiguration('brainHub').update('defaultHeaderState', nextState, vscode.ConfigurationTarget.Global);
+            break;
+          }
 
           case 'refresh':
             SessionScanner.getInstance().invalidateSessionCache(this.currentSession.id);
@@ -182,7 +209,48 @@ export class ChatWebviewPanel {
     );
   }
 
-  private setupSessionWatcher(): void {
+  private computeTreePollSignature(treeSessions: ChatSession[]): string {
+    const parts: string[] = [];
+    for (const s of treeSessions) {
+      if (!s.path) continue;
+      const logsDir = path.join(s.path, '.system_generated', 'logs');
+      const fullTf = path.join(logsDir, 'transcript_full.jsonl');
+      const tf = path.join(logsDir, 'transcript.jsonl');
+      const target = fs.existsSync(fullTf) ? fullTf : tf;
+      try {
+        if (fs.existsSync(target)) {
+          const st = fs.statSync(target);
+          parts.push(`${s.id}:${st.size}:${Math.floor(st.mtimeMs)}`);
+        }
+      } catch {}
+      const subagentsDir = path.join(s.path, '.system_generated', 'subagents');
+      try {
+        if (fs.existsSync(subagentsDir)) {
+          const subFiles = fs.readdirSync(subagentsDir).filter((f) => f.endsWith('.json')).sort();
+          for (const f of subFiles) {
+            const st = fs.statSync(path.join(subagentsDir, f));
+            parts.push(`sub:${s.id}:${f}:${st.size}:${Math.floor(st.mtimeMs)}`);
+          }
+        }
+      } catch {}
+    }
+    const root = treeSessions.find((s) => !s.executorParentId) || treeSessions[0];
+    if (root?.path) {
+      const swarmDir = path.join(root.path, '.system_generated', 'swarm');
+      for (const f of ['members.json', 'board.jsonl', 'view.json', 'plan.json']) {
+        const fp = path.join(swarmDir, f);
+        try {
+          if (fs.existsSync(fp)) {
+            const st = fs.statSync(fp);
+            parts.push(`sw:${f}:${st.size}:${Math.floor(st.mtimeMs)}`);
+          }
+        } catch {}
+      }
+    }
+    return parts.join('|');
+  }
+
+  private setupSessionWatcher(treeSessions: ChatSession[] = []): void {
     if (this.sessionWatcher) {
       return;
     }
@@ -194,21 +262,33 @@ export class ChatWebviewPanel {
 
     const logsDir = path.join(this.currentSession.path, '.system_generated', 'logs');
     const watchTarget = fs.existsSync(logsDir) ? logsDir : this.currentSession.path;
+    const triggerDebouncedReload = () => {
+      if (this.reloadDebounceTimer) {
+        clearTimeout(this.reloadDebounceTimer);
+      }
+      this.reloadDebounceTimer = setTimeout(async () => {
+        await this.updateContent(true);
+      }, 300);
+    };
 
     try {
       if (fs.existsSync(watchTarget)) {
-        this.sessionWatcher = fs.watch(watchTarget, { recursive: true }, (eventType, filename) => {
+        this.sessionWatcher = fs.watch(watchTarget, { recursive: true }, (_eventType, filename) => {
           if (filename && filename.startsWith('.') && !filename.includes('transcript')) {
             return;
           }
-          if (!filename || filename.includes('transcript') || filename.endsWith('.jsonl')) {
-            if (this.reloadDebounceTimer) {
-              clearTimeout(this.reloadDebounceTimer);
-            }
-            this.reloadDebounceTimer = setTimeout(async () => {
-              await this.updateContent(true);
-            }, 300);
+          if (!filename || filename.includes('transcript') || filename.endsWith('.jsonl') || filename.endsWith('.json')) {
+            triggerDebouncedReload();
           }
+        });
+      }
+      const root = treeSessions.find((s) => !s.executorParentId);
+      const swarmDir = root?.path
+        ? path.join(root.path, '.system_generated', 'swarm')
+        : path.join(this.currentSession.path, '.system_generated', 'swarm');
+      if (fs.existsSync(swarmDir)) {
+        this.swarmWatcher = fs.watch(swarmDir, { recursive: false }, () => {
+          triggerDebouncedReload();
         });
       }
     } catch (err) {
@@ -225,18 +305,38 @@ export class ChatWebviewPanel {
         this.lastWatchedFileSize = st.size;
         this.lastWatchedFileMtime = st.mtimeMs;
       }
+      if (treeSessions.length > 0) {
+        this.lastTreeChangeSignature = this.computeTreePollSignature(treeSessions);
+      }
     } catch {}
 
     this.sessionPollingTimer = setInterval(async () => {
       try {
+        let changed = false;
         const targetFile = fs.existsSync(fullTranscriptFile) ? fullTranscriptFile : (fs.existsSync(transcriptFile) ? transcriptFile : null);
         if (targetFile && fs.existsSync(targetFile)) {
           const st = await fs.promises.stat(targetFile);
           if (st.size !== this.lastWatchedFileSize || st.mtimeMs !== this.lastWatchedFileMtime) {
             this.lastWatchedFileSize = st.size;
             this.lastWatchedFileMtime = st.mtimeMs;
-            await this.updateContent(true);
+            changed = true;
           }
+        }
+        const pollTree = this.allSessionsCache.length > 0 ? this.allSessionsCache : treeSessions;
+        if (!changed && pollTree.length > 0) {
+          const rootId = this.currentSession.executorRootId || this.currentSession.id;
+          const rootS = pollTree.find((s) => s.id === rootId) || this.currentSession;
+          const treeMembers = [rootS, ...ExecutorLayoutHelper.collectExecutorDescendants(rootS, pollTree)];
+          if (treeMembers.length > 0) {
+            const sig = this.computeTreePollSignature(treeMembers);
+            if (sig !== this.lastTreeChangeSignature) {
+              this.lastTreeChangeSignature = sig;
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          await this.updateContent(true);
         }
       } catch {}
     }, 2000);
@@ -259,15 +359,24 @@ export class ChatWebviewPanel {
       }
       this.sessionWatcher = undefined;
     }
+    if (this.swarmWatcher) {
+      try {
+        this.swarmWatcher.close();
+      } catch {}
+      this.swarmWatcher = undefined;
+    }
   }
 
   public async updateContent(isLiveUpdate: boolean = false): Promise<void> {
+    const seqId = ++this.activeSequenceId;
     const scanner = SessionScanner.getInstance();
     const cfg = vscode.workspace.getConfiguration('brainHub');
     const messageOrder = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
+    const tokenPricing = TokenUsageMonitor.getPricingFromSettings();
 
     if (this.isShowingCombinedThread) {
       const threadData = await scanner.loadFullThread(this.currentSession.id);
+      if (seqId !== this.activeSequenceId) return;
       if (threadData) {
         this.setupSessionWatcher();
         const lastMsg = threadData.allMessages[threadData.allMessages.length - 1];
@@ -279,10 +388,18 @@ export class ChatWebviewPanel {
 
         this.panel.title = `Thread: ${this.currentSession.threadTitle?.substring(0, 25) || this.currentSession.title.substring(0, 25)}...`;
         const fullHtml = this.generateHtml(this.currentSession, threadData.allMessages, threadData.threadSessions);
+        const tokenBannerHtml = TokenUsageMonitor.renderReaderTokenBannerHtml(
+          this.currentSession.tokenUsage,
+          TokenUsageMonitor.getThresholdsFromSettings(),
+          tokenPricing,
+          !this.currentSession.executorParentId ? this.currentSession.treeTokenUsage : undefined
+        );
         if (isLiveUpdate) {
+          TokenUsageMonitor.getInstance().scheduleRefresh(30);
           await this.panel.webview.postMessage({
             command: 'updateChatContent',
             html: fullHtml,
+            tokenBannerHtml: tokenBannerHtml,
             isLiveUpdate: true,
             messageOrder: messageOrder
           });
@@ -294,11 +411,41 @@ export class ChatWebviewPanel {
     }
 
     const data = await scanner.loadFullSession(this.currentSession.id);
+    if (seqId !== this.activeSequenceId) return;
     if (data) {
       this.currentSession = data.session;
-      this.setupSessionWatcher();
+      const allSessions = isLiveUpdate
+        ? await scanner.scanSessions(false)
+        : (scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false));
+      if (seqId !== this.activeSequenceId) return;
+      this.allSessionsCache = allSessions;
 
-      // Check transcript stat to avoid false refresh
+      const targetInList = allSessions.find((s) => s.id === this.currentSession.id);
+      if (targetInList) {
+        data.session.rootId = targetInList.rootId || data.session.rootId || data.session.id;
+        data.session.childIds = targetInList.childIds || data.session.childIds || [];
+        data.session.parentId = data.session.parentId || targetInList.parentId;
+        data.session.threadTitle = targetInList.threadTitle || data.session.threadTitle;
+        data.session.executorParentId = targetInList.executorParentId;
+        data.session.executorRootId = targetInList.executorRootId;
+        data.session.executorDepth = targetInList.executorDepth;
+        data.session.executorRole = targetInList.executorRole || data.session.executorRole;
+        data.session.executorTypeName = targetInList.executorTypeName || data.session.executorTypeName;
+        data.session.executorRefs = targetInList.executorRefs || data.session.executorRefs;
+        data.session.executorStatus = targetInList.executorStatus ?? data.session.executorStatus;
+        data.session.treeTokenUsage = targetInList.treeTokenUsage;
+        data.session.swarmSummary = targetInList.swarmSummary ?? data.session.swarmSummary;
+      }
+
+      const execRootId = data.session.executorRootId || data.session.id;
+      const execRootSession = allSessions.find((s) => s.id === execRootId) || data.session;
+      const execTreeMembers = [execRootSession, ...ExecutorLayoutHelper.collectExecutorDescendants(execRootSession, allSessions)];
+      const swarmData = execRootSession.path ? await scanner.loadSwarmData(execRootSession.path) : null;
+      if (seqId !== this.activeSequenceId) return;
+
+      this.setupSessionWatcher(execTreeMembers);
+
+      // Check transcript + descendant tree stats to trigger live updates when subagents advance
       let transcriptStat = '';
       if (this.currentSession.path) {
         const fullTranscriptFile = path.join(this.currentSession.path, '.system_generated', 'logs', 'transcript_full.jsonl');
@@ -311,32 +458,34 @@ export class ChatWebviewPanel {
           }
         } catch {}
       }
-
+      const treeSig = execTreeMembers.length > 1 ? this.computeTreePollSignature(execTreeMembers) : '';
       const lastMsg = data.messages[data.messages.length - 1];
-      const newSignature = `${data.messages.length}_${lastMsg?.index ?? 0}_${transcriptStat}`;
+      const newSignature = `${data.messages.length}_${lastMsg?.index ?? 0}_${transcriptStat}_${treeSig}_${this.activeExecutorTab}`;
       if (isLiveUpdate && this.lastContentSignature && this.lastContentSignature === newSignature) {
         return;
       }
       this.lastContentSignature = newSignature;
 
-      const allSessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
-      const targetInList = allSessions.find((s) => s.id === this.currentSession.id);
-      if (targetInList) {
-        data.session.rootId = targetInList.rootId || data.session.rootId || data.session.id;
-        data.session.childIds = targetInList.childIds || data.session.childIds || [];
-        data.session.parentId = data.session.parentId || targetInList.parentId;
-        data.session.threadTitle = targetInList.threadTitle || data.session.threadTitle;
-      }
       const rootId = targetInList?.rootId || data.session.rootId || data.session.id;
       const threadSessions = allSessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId);
       threadSessions.sort((a, b) => (a.createdAt || a.lastModified).getTime() - (b.createdAt || b.lastModified).getTime());
 
       this.panel.title = `Chat: ${data.session.title.substring(0, 25)}...`;
-      const fullHtml = this.generateHtml(data.session, data.messages, threadSessions);
+      const fullHtml = this.generateHtml(data.session, data.messages, threadSessions, allSessions, swarmData);
+      const tokenBannerHtml = TokenUsageMonitor.renderReaderTokenBannerHtml(
+        data.session.tokenUsage,
+        TokenUsageMonitor.getThresholdsFromSettings(),
+        tokenPricing,
+        !data.session.executorParentId ? execRootSession.treeTokenUsage : undefined
+      );
+      if (isLiveUpdate) {
+        TokenUsageMonitor.getInstance().scheduleRefresh(30);
+      }
       if (this.isHtmlInitialized) {
         await this.panel.webview.postMessage({
           command: 'updateChatContent',
           html: fullHtml,
+          tokenBannerHtml: tokenBannerHtml,
           isLiveUpdate: isLiveUpdate,
           messageOrder: messageOrder,
           forceScrollEdge: !isLiveUpdate ? (messageOrder === 'newestFirst' ? 'top' : 'bottom') : undefined
@@ -460,9 +609,11 @@ export class ChatWebviewPanel {
     let startLine = 0;
     let endLine = 0;
 
-    try {
-      filePath = decodeURIComponent(filePath);
-    } catch {}
+    if (!fs.existsSync(filePath)) {
+      try {
+        filePath = decodeURIComponent(filePath);
+      } catch {}
+    }
 
     // Check for hash line numbers: e.g. #L20-L40, #L20, #20
     const hashIdx = filePath.indexOf('#');
@@ -649,31 +800,87 @@ export class ChatWebviewPanel {
     return `Please review the previous conversation context of the session in folder:\n\`${session.path}\`\n(Session ID: \`${session.id}\` - Title: "${session.title}")\nand continue assisting me.`;
   }
 
-  private generateHtml(session: ChatSession, messages: ChatMessage[], threadSessions: ChatSession[] = []): string {
+  private generateHtml(
+    session: ChatSession,
+    messages: ChatMessage[],
+    threadSessions: ChatSession[] = [],
+    allSessions?: ChatSession[],
+    swarmData?: SwarmSessionData | null
+  ): string {
     MarkdownRenderer.setSessionPath(session.path);
     const cfg = vscode.workspace.getConfiguration('brainHub');
     const messageOrder = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
     const defaultToolsState = cfg.get<'collapsed' | 'expanded'>('defaultToolsState', 'collapsed');
     const defaultAiStepsState = cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed');
+    const isHeaderCollapsed = cfg.get<'expanded' | 'collapsed'>('defaultHeaderState', 'expanded') === 'collapsed';
+    const isLiveAutoReload = cfg.get<boolean>('autoReloadOnLiveChat', true);
     const isNewestFirst = messageOrder === 'newestFirst';
     const isToolsExpanded = defaultToolsState === 'expanded';
     const isAiStepsExpanded = defaultAiStepsState === 'expanded';
     const displayMessages = isNewestFirst ? [...messages].reverse() : [...messages];
     const fullTimeStr = DashboardWebviewPanel.formatDateTimeRange(session.createdAt, session.lastModified, true);
+    const shortTimeStr = DashboardWebviewPanel.formatDateTimeRange(session.createdAt, session.lastModified, false);
     const maxStepIndex = messages.reduce((max, m) => Math.max(max, m.index || 0), 0) || messages.length;
+    const userPromptTotal = messages.filter((m) => m.type === 'USER_INPUT').length || session.userPromptCount || session.messageCount || 0;
 
     const isThread = Boolean((session.childIds && session.childIds.length > 0) || session.parentId);
     const totalArtifacts = session.artifactCount || (session.artifacts ? session.artifacts.length : (session.hasArtifacts ? 1 : 0));
     const hasArtifacts = session.hasArtifacts || totalArtifacts > 0;
+    const tokenThresholds = TokenUsageMonitor.getThresholdsFromSettings();
+    const tokenPricing = TokenUsageMonitor.getPricingFromSettings();
+    const sessionsRef = Array.isArray(allSessions) ? allSessions : (this.allSessionsCache || []);
+    const execRootId = session.executorRootId || session.id;
+    const execRootSession = sessionsRef.find((s) => s.id === execRootId) || session;
+    const bannerTreeRollup = !session.executorParentId ? execRootSession.treeTokenUsage : undefined;
+    const tokenBannerHtml = TokenUsageMonitor.renderReaderTokenBannerHtml(
+      session.tokenUsage,
+      tokenThresholds,
+      tokenPricing,
+      bannerTreeRollup
+    );
+    const executorSwitcherHtml = ExecutorLayoutHelper.renderExecutorSwitcherHtml(
+      session,
+      sessionsRef,
+      session.id,
+      this.activeExecutorTab,
+      swarmData,
+      true
+    );
+    const executorOverlayPanelHtml =
+      this.activeExecutorTab === 'progress'
+        ? ExecutorLayoutHelper.renderProgressMatrixHtml(execRootSession, sessionsRef, swarmData, tokenPricing, true)
+        : this.activeExecutorTab === 'swarm' && swarmData
+          ? ExecutorLayoutHelper.renderSwarmBoardHtml(swarmData, execRootSession, sessionsRef, true)
+          : '';
 
-    const threadBadge = isThread
-      ? '<span class="meta-badge green" title="Connected Conversation Thread (Multi-Session Chain)"><span class="meta-icon">🧵</span> Thread</span>'
-      : '<span class="meta-badge blue" title="Single Standalone Conversation"><span class="meta-icon">💬</span> Single Chat</span>';
+    const headerMetaHtml = HeaderLayoutHelper.renderHeaderMetaHtml({
+      isLive: isLiveAutoReload,
+      isThread,
+      userPromptTotal,
+      maxStepIndex,
+      totalArtifacts,
+      hasArtifacts,
+      shortTimeStr,
+      fullTimeStr,
+      workspaceName: session.workspaceName,
+      workspacePath: session.workspacePath,
+      machineName: session.machineName,
+      sessionId: session.id,
+      planPath: session.planPath,
+      walkthroughPath: session.walkthroughPath
+    });
 
-    const artifactBadge = hasArtifacts
-      ? `<span class="meta-badge purple" onclick="openArtifactsModal()" style="cursor: pointer;" title="View all ${totalArtifacts} artifacts generated in this session (Click to open)"><span class="meta-icon">📦</span> ${totalArtifacts > 0 ? `${totalArtifacts} ` : ''}Artifacts</span>`
-      : '<span class="meta-badge" style="opacity: 0.65;" title="No artifacts generated in this session"><span class="meta-icon">📦</span> No Artifacts</span>';
-    const typeBadgeHtml = `${threadBadge}${artifactBadge}`;
+    const collapsedStripHtml = HeaderLayoutHelper.renderCollapsedSummaryStripHtml({
+      isLive: isLiveAutoReload,
+      isThread,
+      userPromptTotal,
+      totalArtifacts,
+      hasArtifacts,
+      lastModified: session.lastModified,
+      maxStepIndex,
+      tokenUsage: session.tokenUsage,
+      thresholds: tokenThresholds
+    });
 
     let threadBannerHtml = '';
     if (threadSessions.length > 1) {
@@ -702,37 +909,6 @@ export class ChatWebviewPanel {
           </div>
           <div class="thread-chain">
             ${partsHtml}
-          </div>
-        </div>
-      `;
-    }
-
-    let artifactsHtml = '';
-    if (session.hasArtifacts || totalArtifacts > 0) {
-      artifactsHtml = `
-        <div class="artifacts-bar">
-          <div class="artifacts-title">
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.6-1.2-1.6 1.2a.25.25 0 0 1-.4-.2Z"></path></svg>
-            <span>Session Artifacts:</span>
-          </div>
-          <div class="artifacts-links">
-            <button class="artifact-btn primary-artifact-btn" onclick="openArtifactsModal()" title="View all artifacts generated in this session (documents, AI images, browser videos, scratch files)">
-              <span class="artifact-icon">📦</span> All Artifacts (${totalArtifacts})
-            </button>
-            ${
-              session.planPath
-                ? `<button class="artifact-btn" onclick="openRichPreview('${encodeURI(session.planPath)}')" title="Open implementation_plan.md in Antigravity Rich Preview">
-                    <span class="artifact-icon">📋</span> Plan
-                  </button>`
-                : ''
-            }
-            ${
-              session.walkthroughPath
-                ? `<button class="artifact-btn" onclick="openRichPreview('${encodeURI(session.walkthroughPath)}')" title="Open walkthrough.md in Antigravity Rich Preview">
-                    <span class="artifact-icon">✅</span> Walkthrough
-                  </button>`
-                : ''
-            }
           </div>
         </div>
       `;
@@ -772,6 +948,7 @@ export class ChatWebviewPanel {
         </style>
         <style>
           ${HIGHLIGHT_CSS}
+          ${TokenUsageMonitor.getTokenTelemetryCss()}
         </style>
         <style>
           :root {
@@ -866,14 +1043,14 @@ export class ChatWebviewPanel {
             z-index: 100;
             background: var(--bg-primary);
             border-bottom: 1px solid var(--border-color);
-            padding: 12px 24px;
+            padding: 8px 12px;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
             overflow-anchor: none !important;
             transition: padding 0.15s ease, box-shadow 0.15s ease;
           }
 
           .header-container.scrolled {
-            padding: 8px 24px;
+            padding: 6px 12px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
           }
 
@@ -1769,27 +1946,48 @@ export class ChatWebviewPanel {
           .markdown-link:hover { text-decoration: underline; }
           .markdown-hr { border: none; border-top: 1px solid var(--border-color); margin: 14px 0; }
 
+          .table-container {
+            width: 100%;
+            overflow-x: auto;
+            margin: 14px 0;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-color);
+          }
+
+          .table-container > table,
+          .table-container > .markdown-table {
+            margin: 0 !important;
+          }
+
           .message-bubble table,
-          .markdown-table {
+          .markdown-table,
+          table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: auto;
             font-size: 13px;
-            line-height: 2.1;
+            line-height: 1.55;
             margin: 14px 0;
           }
 
           .message-bubble th,
           .message-bubble td,
           .markdown-table th,
-          .markdown-table td {
+          .markdown-table td,
+          th,
+          td {
             border: 1px solid var(--border-color);
-            padding: 12px 16px;
+            padding: 8px 12px;
             text-align: left;
-            vertical-align: middle;
+            vertical-align: top;
+            word-break: normal !important;
+            overflow-wrap: normal !important;
+            hyphens: none;
           }
 
           .message-bubble th,
-          .markdown-table th {
+          .markdown-table th,
+          th {
             background: var(--bg-secondary);
             font-weight: 600;
             color: var(--text-primary);
@@ -2252,11 +2450,6 @@ export class ChatWebviewPanel {
           .markdown-alert-warning { border-color: var(--accent-orange); }
           .markdown-alert-caution { border-color: var(--accent-red); }
 
-          .table-container { overflow-x: auto; margin: 14px 0; }
-          table { border-collapse: collapse; width: 100%; font-size: 13px; }
-          th, td { border: 1px solid var(--border-color); padding: 8px 12px; text-align: left; }
-          th { background: var(--bg-secondary); font-weight: 600; }
-
           details.chat-details {
             border: 1px solid var(--border-color);
             border-radius: var(--radius-md);
@@ -2265,7 +2458,7 @@ export class ChatWebviewPanel {
             background: var(--bg-primary);
           }
 
-          details.chat-details summary {
+          details.chat-details > summary {
             background: var(--bg-secondary);
             padding: 8px 12px;
             cursor: pointer;
@@ -2278,7 +2471,7 @@ export class ChatWebviewPanel {
             transition: background 0.15s;
           }
 
-          details.chat-details summary:hover {
+          details.chat-details > summary:hover {
             background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
           }
 
@@ -2322,7 +2515,7 @@ export class ChatWebviewPanel {
             overflow: hidden;
           }
 
-          details.autonomous-group-details summary {
+          details.autonomous-group-details > summary {
             padding: 8px 12px;
             font-size: 12px;
             font-weight: 600;
@@ -2335,8 +2528,14 @@ export class ChatWebviewPanel {
             user-select: none;
           }
 
-          details.autonomous-group-details[open] summary {
+          details.autonomous-group-details[open] > summary {
             border-bottom: 1px solid var(--border-color);
+          }
+
+          .markdown-summary-block {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed var(--border-color);
           }
 
           .autonomous-group-body {
@@ -2422,41 +2621,22 @@ export class ChatWebviewPanel {
             box-shadow: 0 0 8px #00d2ff;
             animation: pulseBadge 1.5s infinite;
           }
+          ${HeaderLayoutHelper.getSharedHeaderCss()}
+          ${ExecutorLayoutHelper.getSharedExecutorCss()}
         </style>
       </head>
       <body data-workspace-path="${MarkdownRenderer.escapeHtml(session.workspacePath || '')}">
         <div id="chatTopSentinel" style="position: absolute; top: 0; left: 0; width: 100%; height: 35px; pointer-events: none; opacity: 0; z-index: -1;"></div>
-        <header class="header-container">
+        <header class="header-container${isHeaderCollapsed ? ' header-collapsed' : ''}" id="chatHeaderContainer">
           <div class="header-main">
-            <div class="header-title-section" style="width: 100%;">
-              <h1 class="session-title">
-                <span class="session-title-icon">
-                  <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
-                    <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path>
-                  </svg>
-                </span>
-                <span>${MarkdownRenderer.escapeHtml(this.isShowingCombinedThread ? `Thread: ${session.threadTitle || session.title}` : session.title)}</span>
-              </h1>
-              <div class="header-meta">
-                ${cfg.get<boolean>('autoReloadOnLiveChat', true) ? '<span class="meta-badge green live-badge" title="Live Auto-Reload Active: Automatically syncs when new AI steps arrive"><span class="live-dot"></span>Live</span>' : ''}
-                ${typeBadgeHtml}
-                <span class="meta-badge blue" title="Timeline: Created ➔ Last Message">${fullTimeStr}</span>
-                <span class="meta-badge cyan" title="User chat messages in this session">💬${messages.filter((m) => m.type === 'USER_INPUT').length || session.userPromptCount || session.messageCount || 0}</span>
-                <span class="meta-badge purple" title="Total Execution Steps: ${maxStepIndex}">🤖${maxStepIndex}</span>
-                ${
-                  session.workspaceName
-                    ? `<span class="meta-badge ws" title="Project Folder: ${session.workspacePath || session.workspaceName}">📁 ${MarkdownRenderer.escapeHtml(session.workspaceName)}</span>`
-                    : ''
-                }
-                ${
-                  session.machineName
-                    ? `<span class="meta-badge pc" title="Computer: ${session.machineName}">💻 ${MarkdownRenderer.escapeHtml(session.machineName)}</span>`
-                    : ''
-                }
-                <span class="meta-badge purple" title="Full Session ID: ${session.id}">🆔 ${session.id.length > 8 ? session.id.substring(0, 4) + '...' + session.id.substring(session.id.length - 4) : session.id}</span>
-                <span class="meta-badge purple" style="font-family:var(--font-mono);font-size:10.5px;" title="Brain Hub for Antigravity Version">v${this.extensionVersion}</span>
+            <div class="header-title-section" style="width: 100%; display: flex; flex-direction: column; gap: 4px;">
+              <div class="session-title-row">
+                <h1 class="session-title" title="${MarkdownRenderer.escapeHtml(this.isShowingCombinedThread ? `Thread: ${session.threadTitle || session.title}` : session.title)}">${MarkdownRenderer.escapeHtml(this.isShowingCombinedThread ? `Thread: ${session.threadTitle || session.title}` : session.title)}</h1>
+                <button class="action-btn naked-btn header-collapse-toggle" id="headerCollapseToggleBtn" onclick="toggleHeaderCollapse()" title="${isHeaderCollapsed ? 'Expand header (show pills, toolbar, and full token bar)' : 'Collapse header to compact 1-line summary'}">${HeaderLayoutHelper.renderCollapseToggleIconSvg(isHeaderCollapsed)}</button>
               </div>
-              <div class="header-combined-toolbar" style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:6px;">
+              ${headerMetaHtml}
+              ${collapsedStripHtml}
+              <div class="header-combined-toolbar" style="display:flex; align-items:center; flex-wrap:wrap; gap:2px; margin-top:0;">
                 <button class="action-btn primary icon-only" onclick="copyResumePrompt()" title="Resume session (copy continuation prompt to clipboard)">
                   <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4.5 3a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .757.429l8-4.5a.5.5 0 0 0 0-.858l-8-4.5A.5.5 0 0 0 4.5 3z"></path></svg>
                 </button>
@@ -2489,21 +2669,23 @@ export class ChatWebviewPanel {
                   <span id="internalToggleLabel" style="font-size:13px;line-height:1;">🤖</span>
                 </button>
 
-                <div class="search-input-wrapper" style="position:relative; flex:1 1 160px; min-width:160px; max-width:100%;">
+                <div class="search-input-wrapper" style="position:relative; flex:1 1 110px; min-width:110px; max-width:100%;">
                   <svg class="search-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"></path></svg>
-                  <input type="text" id="searchInput" class="search-input" style="padding:4px 75px 4px 26px; font-size:12px;" placeholder="Search transcript or #<num>..." oninput="onSearchInputChanged('searchInput')" onfocus="this.select()" title="Filter messages in current chat transcript. Press Enter to cycle matches.">
+                  <input type="text" id="searchInput" class="search-input" style="padding:3px 64px 3px 24px; font-size:var(--vscode-font-size, 13px);" placeholder="Search transcript or #<num>..." oninput="onSearchInputChanged('searchInput')" onfocus="this.select()" title="Filter messages in current chat transcript. Press Enter to cycle matches.">
                   <span id="searchInputCount" class="search-match-count"></span>
                   <button class="clear-search-btn" id="clearSearchInput" onclick="clearSearchInput('searchInput')" title="Clear search">✕</button>
                 </div>
               </div>
+              ${tokenBannerHtml}
             </div>
           </div>
         </header>
 
         ${threadBannerHtml}
-        ${artifactsHtml}
+        ${executorSwitcherHtml}
+        ${executorOverlayPanelHtml}
 
-        <main class="chat-container" id="chatContainer">
+        <main class="chat-container" id="chatContainer" ${executorOverlayPanelHtml ? 'style="display:none;"' : ''}>
           ${this.groupMessages(displayMessages).map(item => this.renderMessageItem(item, isToolsExpanded, isAiStepsExpanded)).join('\n')}
         </main>
 
@@ -2804,7 +2986,7 @@ export class ChatWebviewPanel {
               if (!linkPath) {
                 const href = linkEl.getAttribute('href') || '';
                 if (href.startsWith('javascript:')) {
-                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\(['"]([^'"]+)['"]\)/);
+                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\\(['"]([^'"]+)['"]\\)/);
                   if (m) {
                     try { linkPath = decodeURI(m[1]); } catch { linkPath = m[1]; }
                   }
@@ -3104,12 +3286,12 @@ export class ChatWebviewPanel {
 
           function previewArtifactDoc(el) {
             const p = el ? el.getAttribute('data-path') : '';
-            if (p) openRichPreview(p);
+            if (p) vscode.postMessage({ command: 'openRichPreview', filePath: p });
           }
 
           function editArtifactDoc(el) {
             const p = el ? el.getAttribute('data-path') : '';
-            if (p) openFile(p);
+            if (p) vscode.postMessage({ command: 'openFile', filePath: p });
           }
 
           function openSessionFolderInOS() {
@@ -3179,10 +3361,33 @@ export class ChatWebviewPanel {
           function openFolder() { vscode.postMessage({ command: 'openFolder' }); }
           function deleteSession() { vscode.postMessage({ command: 'deleteSession' }); }
           function refreshChat() { vscode.postMessage({ command: 'refresh' }); }
-          function openFile(encodedPath) { vscode.postMessage({ command: 'openFile', filePath: decodeURI(encodedPath) }); }
-          function openRichPreview(encodedPath) { vscode.postMessage({ command: 'openRichPreview', filePath: decodeURI(encodedPath) }); }
-          function openIdePreview(encodedPath) { vscode.postMessage({ command: 'openIdePreview', filePath: decodeURI(encodedPath) }); }
+          function safeDecodePath(rawOrEncodedPath) {
+            if (!rawOrEncodedPath) return '';
+            try {
+              return decodeURIComponent(rawOrEncodedPath);
+            } catch {
+              try {
+                return decodeURI(rawOrEncodedPath);
+              } catch {
+                return rawOrEncodedPath;
+              }
+            }
+          }
+          function openFile(encodedPath) {
+            const p = safeDecodePath(encodedPath);
+            if (p) vscode.postMessage({ command: 'openFile', filePath: p });
+          }
+          function openRichPreview(encodedPath) {
+            const p = safeDecodePath(encodedPath);
+            if (p) vscode.postMessage({ command: 'openRichPreview', filePath: p });
+          }
+          function openIdePreview(encodedPath) {
+            const p = safeDecodePath(encodedPath);
+            if (p) vscode.postMessage({ command: 'openIdePreview', filePath: p });
+          }
           function openSessionById(sessionId) { vscode.postMessage({ command: 'openSessionById', sessionId: sessionId }); }
+          function toggleExecutorTab(tab) { vscode.postMessage({ command: 'toggleExecutorTab', tab: tab }); }
+          window.toggleExecutorTab = toggleExecutorTab;
           function toggleCombinedThread() { vscode.postMessage({ command: 'toggleCombinedThread' }); }
 
           window.openMediaModal = openMediaModal;
@@ -3280,13 +3485,48 @@ export class ChatWebviewPanel {
             }
           }
 
+          function getDetailsStateKeys(el) {
+            const keys = [];
+            const step = el.getAttribute('data-step');
+            if (step) keys.push('step:' + step);
+            const groupStart = el.getAttribute('data-group-start');
+            if (groupStart) keys.push('group-start:' + groupStart);
+            const detailKey = el.getAttribute('data-detail-key');
+            if (detailKey) keys.push('detail:' + detailKey);
+            const groupRange = el.getAttribute('data-group-range');
+            if (groupRange) keys.push('group-range:' + groupRange);
+            return keys;
+          }
+
+          function syncExpandToggleButtons() {
+            const toolsBtn = document.getElementById('toolsToggleBtn');
+            if (toolsBtn) {
+              toolsBtn.title = 'Tool Call Details: ' + (toolsExpanded ? 'Expanded (Click to collapse)' : 'Collapsed (Click to expand)');
+              toolsBtn.classList.toggle('active', toolsExpanded);
+            }
+            const internalBtn = document.getElementById('internalToggleBtn');
+            if (internalBtn) {
+              internalBtn.title = 'Autonomous AI Execution Steps: ' + (aiStepsExpanded ? 'Expanded (Click to collapse)' : 'Collapsed (Click to expand)');
+              internalBtn.classList.toggle('active', aiStepsExpanded);
+            }
+          }
+
           function applyChatContentUpdate(message, isNewestFirst, forceScrollEdge) {
             const isLive = !!message.isLiveUpdate;
 
-            const openSteps = new Set();
-            document.querySelectorAll('details[open]').forEach(el => {
-              const k = el.getAttribute('data-step') || el.getAttribute('data-group-range');
-              if (k) openSteps.add(k);
+            const existingTokenDrawer = document.getElementById('tokenTelemetryDrawer');
+            const wasTokenDrawerOpen = !!(existingTokenDrawer && existingTokenDrawer.open);
+
+            const openStepKeys = new Set();
+            const closedStepKeys = new Set();
+            document.querySelectorAll('details').forEach(el => {
+              const keys = getDetailsStateKeys(el);
+              if (keys.length === 0) return;
+              if (el.open) {
+                keys.forEach(k => openStepKeys.add(k));
+              } else {
+                keys.forEach(k => closedStepKeys.add(k));
+              }
             });
 
             try {
@@ -3304,14 +3544,78 @@ export class ChatWebviewPanel {
                 oldHeaderMeta.innerHTML = newHeaderMeta.innerHTML;
               }
 
-              if (openSteps.size > 0) {
-                document.querySelectorAll('details').forEach(el => {
-                  const k = el.getAttribute('data-step') || el.getAttribute('data-group-range');
-                  if (k && openSteps.has(k)) {
-                    el.open = true;
-                  }
-                });
+              const newCollapsedStrip = newDoc.getElementById('headerCollapsedStrip');
+              const oldCollapsedStrip = document.getElementById('headerCollapsedStrip');
+              if (newCollapsedStrip && oldCollapsedStrip) {
+                oldCollapsedStrip.innerHTML = newCollapsedStrip.innerHTML;
               }
+
+              const newBanner = newDoc.getElementById('readerTokenBanner');
+              const oldBanner = document.getElementById('readerTokenBanner');
+              if (newBanner && oldBanner) {
+                oldBanner.outerHTML = newBanner.outerHTML;
+              } else if (message.tokenBannerHtml !== undefined && oldBanner) {
+                oldBanner.outerHTML = message.tokenBannerHtml;
+              }
+
+              const newSwitcher = newDoc.getElementById('executorSwitcherBar');
+              const oldSwitcher = document.getElementById('executorSwitcherBar');
+              if (newSwitcher && oldSwitcher) {
+                oldSwitcher.outerHTML = newSwitcher.outerHTML;
+              } else if (newSwitcher && !oldSwitcher && oldMain) {
+                oldMain.insertAdjacentHTML('beforebegin', newSwitcher.outerHTML);
+              } else if (!newSwitcher && oldSwitcher) {
+                oldSwitcher.remove();
+              }
+
+              ['executorProgressMatrix', 'swarmBoardPanel'].forEach(panelId => {
+                const existing = document.getElementById(panelId);
+                if (existing) existing.remove();
+              });
+              const newOverlay = newDoc.getElementById('executorProgressMatrix') || newDoc.getElementById('swarmBoardPanel');
+              if (newOverlay && oldMain) {
+                oldMain.insertAdjacentHTML('beforebegin', newOverlay.outerHTML);
+              }
+              if (newMain && oldMain) {
+                oldMain.style.display = newMain.style.display || '';
+              }
+
+              if (wasTokenDrawerOpen) {
+                const restoredDrawer = document.getElementById('tokenTelemetryDrawer');
+                if (restoredDrawer) restoredDrawer.open = true;
+              }
+              if (typeof closeOverflowPopover === 'function') {
+                closeOverflowPopover();
+              }
+              if (typeof syncHeaderCollapseUi === 'function') {
+                syncHeaderCollapseUi();
+              }
+              if (typeof initHeaderOverflowObserver === 'function') {
+                setTimeout(initHeaderOverflowObserver, 40);
+              }
+
+              syncExpandToggleButtons();
+              document.querySelectorAll('details').forEach(el => {
+                const keys = getDetailsStateKeys(el);
+                const wasOpen = keys.some(k => openStepKeys.has(k));
+                const wasClosed = keys.some(k => closedStepKeys.has(k));
+
+                if (el.classList.contains('autonomous-group-details') || el.classList.contains('internal-step-details')) {
+                  if (aiStepsExpanded) {
+                    el.open = !(wasClosed && !wasOpen);
+                  } else {
+                    el.open = wasOpen;
+                  }
+                } else if (el.classList.contains('chat-details')) {
+                  if (toolsExpanded) {
+                    el.open = !(wasClosed && !wasOpen);
+                  } else {
+                    el.open = wasOpen;
+                  }
+                } else if (wasOpen) {
+                  el.open = true;
+                }
+              });
 
               setTimeout(renderMermaidDiagrams, 80);
               onSearchInputChanged('searchInput');
@@ -3319,6 +3623,9 @@ export class ChatWebviewPanel {
               const forceEdge = forceScrollEdge || message.forceScrollEdge;
               if (forceEdge === 'top') {
                 window.scrollTo({ top: 0, behavior: 'auto' });
+                if (typeof resetHeaderScrollCollapse === 'function') {
+                  resetHeaderScrollCollapse();
+                }
               } else if (forceEdge === 'bottom') {
                 window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
               }
@@ -3368,6 +3675,24 @@ export class ChatWebviewPanel {
               // Apply update immediately when strictly at active edge or during manual refresh
               pendingLiveUpdateMessage = null;
               applyChatContentUpdate(message, isNewestFirst, message.forceScrollEdge);
+            } else if (message && message.command === 'liveStepsUpdated') {
+              if (message.tokenBannerHtml !== undefined) {
+                const existingBanner = document.getElementById('readerTokenBanner');
+                if (existingBanner) {
+                  const existingDrawer = document.getElementById('tokenTelemetryDrawer');
+                  const wasTokenDrawerOpen = !!(existingDrawer && existingDrawer.open);
+                  existingBanner.outerHTML = message.tokenBannerHtml;
+                  if (wasTokenDrawerOpen) {
+                    const newDrawer = document.getElementById('tokenTelemetryDrawer');
+                    if (newDrawer) newDrawer.open = true;
+                  }
+                }
+              }
+              if (message.html) {
+                const orderLabel = document.getElementById('orderLabel');
+                const isNewestFirst = (message.messageOrder || (orderLabel && orderLabel.textContent && orderLabel.textContent.includes('Oldest') ? 'oldestFirst' : 'newestFirst')) === 'newestFirst';
+                applyChatContentUpdate(message, isNewestFirst, message.forceScrollEdge);
+              }
             }
           });
 
@@ -3426,6 +3751,23 @@ export class ChatWebviewPanel {
                 if (p) {
                   try { p = decodeURIComponent(p); } catch (err) {}
                   vscode.postMessage({ command: 'openIdePreview', filePath: p });
+                }
+                return;
+              }
+
+              // 0. Conversation link click -> open executor conversation
+              const convLink = target.closest('.conversation-link, a[href^="conversation://"]');
+              if (convLink) {
+                e.preventDefault();
+                e.stopPropagation();
+                let convId = convLink.getAttribute('data-conversation-id');
+                if (!convId) {
+                  const href = convLink.getAttribute('href') || '';
+                  const m = href.match(new RegExp('conversation://([0-9a-f-]{36})', 'i'));
+                  if (m) convId = m[1];
+                }
+                if (convId) {
+                  openSessionById(convId);
                 }
                 return;
               }
@@ -3671,7 +4013,7 @@ export class ChatWebviewPanel {
             }
 
             // Priority 1 & 2: Check for #<number> syntax
-            const numMatch = rawQuery.match(/^#\s*(\d+)$/);
+            const numMatch = rawQuery.match(/^#\\s*(\\d+)$/);
             if (numMatch) {
               const targetNum = parseInt(numMatch[1], 10);
 
@@ -3703,7 +4045,9 @@ export class ChatWebviewPanel {
                 const stepAttr = card.getAttribute('data-step') || '';
                 let isMatched = (stepAttr === String(targetNum));
                 if (!isMatched && stepAttr.includes('-')) {
-                  const [start, end] = stepAttr.split('-').map(Number);
+                  const [rawStart, rawEnd] = stepAttr.split('-').map(Number);
+                  const start = Math.min(rawStart, rawEnd);
+                  const end = Math.max(rawStart, rawEnd);
                   if (!isNaN(start) && !isNaN(end) && targetNum >= start && targetNum <= end) {
                     isMatched = true;
                   }
@@ -3998,7 +4342,7 @@ export class ChatWebviewPanel {
               svgW = svg.viewBox.baseVal.width;
               svgH = svg.viewBox.baseVal.height;
             } else if (svg.getAttribute('viewBox')) {
-              const parts = svg.getAttribute('viewBox').trim().split(/[\s,]+/);
+              const parts = svg.getAttribute('viewBox').trim().split(/[\\s,]+/);
               if (parts.length === 4) {
                 svgW = parseFloat(parts[2]);
                 svgH = parseFloat(parts[3]);
@@ -4398,6 +4742,9 @@ export class ChatWebviewPanel {
               window._chatScrollHandlerBound = true;
               window.addEventListener('scroll', () => {
                 const scrollY = window.scrollY || document.documentElement.scrollTop;
+                if (typeof updateHeaderScrollCollapse === 'function') {
+                  updateHeaderScrollCollapse(scrollY, document.documentElement.scrollHeight, window.innerHeight);
+                }
                 const orderLabel = document.getElementById('orderLabel');
                 const isNewestFirst = (orderLabel && orderLabel.textContent && orderLabel.textContent.includes('Oldest')) ? false : true;
                 const isStrictlyAtActiveEdge = isNewestFirst
@@ -4439,27 +4786,19 @@ export class ChatWebviewPanel {
             }
           }
 
-          function openRichPreview(encodedPath) {
-            let p = decodeURIComponent(encodedPath || '');
-            if (p) {
-              vscode.postMessage({ command: 'openRichPreview', filePath: p });
-            }
-          }
-
-          function openIdePreview(encodedPath) {
-            let p = decodeURIComponent(encodedPath || '');
-            if (p) {
-              vscode.postMessage({ command: 'openIdePreview', filePath: p });
-            }
-          }
+          ${HeaderLayoutHelper.getSharedClientHeaderScript('chatHeaderContainer', isHeaderCollapsed)}
 
           document.addEventListener('DOMContentLoaded', () => {
             renderMermaidDiagrams();
             initChatScrollObserver();
+            syncHeaderCollapseUi();
+            initHeaderOverflowObserver();
           });
           setTimeout(() => {
             renderMermaidDiagrams();
             initChatScrollObserver();
+            syncHeaderCollapseUi();
+            initHeaderOverflowObserver();
           }, 200);
         </script>
       </body>
@@ -4479,7 +4818,17 @@ export class ChatWebviewPanel {
     };
 
     for (const msg of messages) {
-      const isSystemEvent = msg.type === 'SYSTEM_MESSAGE' || msg.source === 'SYSTEM';
+      const isSystemEvent =
+        msg.type === 'CHECKPOINT' ||
+        msg.type === 'SUBAGENT_NOTIFICATION' ||
+        msg.type === 'SYSTEM_SDK' ||
+        (msg.type === 'SYSTEM_MESSAGE' &&
+          msg.interAgentMeta?.kind !== 'task_assignment' &&
+          msg.interAgentMeta?.kind !== 'executor_report') ||
+        (msg.source === 'SYSTEM' &&
+          msg.type !== 'INVOKE_SUBAGENT' &&
+          msg.interAgentMeta?.kind !== 'task_assignment' &&
+          msg.interAgentMeta?.kind !== 'executor_report');
 
       const textContent = (msg.cleanContent !== undefined ? msg.cleanContent : msg.content) || '';
       const isShortTransient =
@@ -4513,15 +4862,20 @@ export class ChatWebviewPanel {
   private renderMessageItem(item: { type: 'single' | 'autonomous_group'; message?: ChatMessage; group?: ChatMessage[] }, isToolsExpanded: boolean = false, isAiStepsExpanded: boolean = false): string {
     if (item.type === 'autonomous_group' && item.group) {
       const group = item.group;
-      const firstIndex = group[0].index;
-      const lastIndex = group[group.length - 1].index;
+      const firstIndex = Math.min(group[0].index, group[group.length - 1].index);
+      const lastIndex = Math.max(group[0].index, group[group.length - 1].index);
 
       const toolNamesSet = new Set<string>();
       let autoCount = 0;
       let sysCount = 0;
 
       group.forEach(g => {
-        if (g.source === 'SYSTEM' || g.type === 'SYSTEM_MESSAGE') {
+        if (
+          g.source === 'SYSTEM' ||
+          g.type === 'SYSTEM_MESSAGE' ||
+          g.type === 'CHECKPOINT' ||
+          g.type === 'SUBAGENT_NOTIFICATION'
+        ) {
           sysCount++;
         } else {
           autoCount++;
@@ -4531,7 +4885,12 @@ export class ChatWebviewPanel {
       const toolNames = toolNamesSet.size > 0 ? Array.from(toolNamesSet).join(', ') : (autoCount > 0 ? 'Reasoning' : 'System Signals');
 
       const innerCardsHtml = group.map(g => {
-        if (g.source === 'SYSTEM' || g.type === 'SYSTEM_MESSAGE') {
+        if (
+          g.source === 'SYSTEM' ||
+          g.type === 'SYSTEM_MESSAGE' ||
+          g.type === 'CHECKPOINT' ||
+          g.type === 'SUBAGENT_NOTIFICATION'
+        ) {
           return this.renderMessage(g, isToolsExpanded);
         }
         return this.renderSingleAutonomousStep(g, isToolsExpanded);
@@ -4553,7 +4912,7 @@ export class ChatWebviewPanel {
       }
 
       return `
-        <details class="autonomous-group-details is-internal-step" ${isAiStepsExpanded ? 'open' : ''} data-step="${firstIndex}-${lastIndex}">
+        <details class="autonomous-group-details is-internal-step" ${isAiStepsExpanded ? 'open' : ''} data-step="${firstIndex}-${lastIndex}" data-group-start="${firstIndex}">
           <summary class="autonomous-group-summary" title="Click to expand/collapse internal execution step and system event list">
             <span>⚡</span>
             <span><b>${actionTitle}</b></span>
@@ -4578,7 +4937,7 @@ export class ChatWebviewPanel {
     let thinkingHtml = '';
     if (msg.thinking) {
       thinkingHtml = `
-        <details class="chat-details thinking-details" ${isToolsExpanded ? 'open' : ''}>
+        <details class="chat-details thinking-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-thinking">
           <summary title="Click to view AI reasoning and plan">
             <span>🧠</span>
             <span>Model Reasoning & Planning</span>
@@ -4595,7 +4954,7 @@ export class ChatWebviewPanel {
     let toolCallsHtml = '';
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       toolCallsHtml = msg.toolCalls
-        .map((tc) => this.renderToolCall(tc, isToolsExpanded))
+        .map((tc, tcIdx) => this.renderToolCall(tc, isToolsExpanded, `step-${msg.index}-tool-${tcIdx}`))
         .join('\n');
     }
 
@@ -4605,7 +4964,7 @@ export class ChatWebviewPanel {
         .map(p => MarkdownRenderer.render(p))
         .join('\n<hr style="border:none;border-top:1px dashed var(--border-color);margin:8px 0;" />\n');
       systemPayloadsHtml = `
-        <details class="chat-details" ${isToolsExpanded ? 'open' : ''}>
+        <details class="chat-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-syslogs">
           <summary title="Click to view background system events and task logs"><span>⚙️</span><span>System / Task Logs</span></summary>
           <div class="details-inner-content">
             ${innerHtml}
@@ -4621,12 +4980,14 @@ export class ChatWebviewPanel {
     }
 
     const toolNames = msg.toolCalls && msg.toolCalls.length > 0 ? msg.toolCalls.map(t => t.name).join(', ') : 'Reasoning';
+    const stepTokenBadge = TokenUsageMonitor.renderStepTokenBadgeHtml(msg);
 
     return `
       <details class="internal-step-details" ${isToolsExpanded ? 'open' : ''} data-step="${msg.index}">
         <summary title="Click to expand/collapse action details">
           <span>⚡</span>
           <span>Action #${msg.index}</span>
+          ${stepTokenBadge}
           <span style="font-size:11px;color:var(--accent-purple);margin-left:auto;font-family:var(--font-mono);">[${MarkdownRenderer.escapeHtml(toolNames)}]</span>
         </summary>
         <div class="internal-step-body" style="padding:10px 12px;">
@@ -4640,26 +5001,31 @@ export class ChatWebviewPanel {
   }
 
   private renderMessage(msg: ChatMessage, isToolsExpanded: boolean = false): string {
+    if (msg.type === 'INVOKE_SUBAGENT') {
+      const sessionsRef = this.allSessionsCache || [];
+      const matches = Array.from(
+        String(msg.content || '').matchAll(/"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/gi)
+      );
+      if (matches.length > 0) {
+        return matches
+          .map((m) => {
+            const convId = m[1].toLowerCase();
+            const linkedChild = sessionsRef.find((s) => s.id.toLowerCase() === convId);
+            return ExecutorLayoutHelper.renderInlineSubagentCardHtml({ conversationId: convId, status: msg.status }, linkedChild, true);
+          })
+          .join('\n');
+      }
+      return ExecutorLayoutHelper.renderInlineSubagentCardHtml({ status: msg.status }, undefined, true);
+    }
+
+    if (msg.interAgentMeta) {
+      return ExecutorLayoutHelper.renderInterAgentMessageHtml(msg, this.allSessionsCache || [], true);
+    }
+
     if (msg.type === 'USER_INPUT') {
       return this.renderUserMessage(msg);
     } else if (msg.type === 'PLANNER_RESPONSE' || msg.source === 'MODEL') {
       return this.renderAiMessage(msg, isToolsExpanded);
-    } else if (msg.type === 'SYSTEM_MESSAGE' || msg.source === 'SYSTEM') {
-      const renderedContent = msg.content ? MarkdownRenderer.render(msg.content) : '<em>No system event content.</em>';
-      return `
-        <details class="system-event-banner is-internal-step" data-step="${msg.index}" style="margin:8px 0;border:1px dashed var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);overflow:hidden;">
-          <summary style="display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-secondary);user-select:none;" title="Click to view system event details">
-            <span>⚙️</span>
-            <span><b>System Event #${msg.index}</b></span>
-            <span style="margin-left:auto;font-size:11px;color:var(--text-muted);">Click to view</span>
-          </summary>
-          <div class="system-event-body" style="padding:12px 18px;border-top:1px dashed var(--border-color);background:var(--bg-primary);font-size:13px;line-height:1.6;">
-            <div class="markdown-content">
-              ${renderedContent}
-            </div>
-          </div>
-        </details>
-      `;
     } else if (msg.type === 'CHECKPOINT') {
       const renderedContent = msg.content ? MarkdownRenderer.render(msg.content) : '<em>No checkpoint summary content available.</em>';
       return `
@@ -4687,6 +5053,22 @@ export class ChatWebviewPanel {
             <span style="margin-left:auto;font-size:11px;color:var(--accent-cyan, #00bcd4);">Click to view</span>
           </summary>
           <div class="subagent-body" style="padding:12px 18px;border-top:1px dashed var(--border-color);background:var(--bg-primary);font-size:13px;line-height:1.6;">
+            <div class="markdown-content">
+              ${renderedContent}
+            </div>
+          </div>
+        </details>
+      `;
+    } else if (msg.type === 'SYSTEM_MESSAGE' || msg.source === 'SYSTEM') {
+      const renderedContent = msg.content ? MarkdownRenderer.render(msg.content) : '<em>No system event content.</em>';
+      return `
+        <details class="system-event-banner is-internal-step" data-step="${msg.index}" style="margin:8px 0;border:1px dashed var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);overflow:hidden;">
+          <summary style="display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-secondary);user-select:none;" title="Click to view system event details">
+            <span>⚙️</span>
+            <span><b>System Event #${msg.index}</b></span>
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted);">Click to view</span>
+          </summary>
+          <div class="system-event-body" style="padding:12px 18px;border-top:1px dashed var(--border-color);background:var(--bg-primary);font-size:13px;line-height:1.6;">
             <div class="markdown-content">
               ${renderedContent}
             </div>
@@ -4758,7 +5140,7 @@ export class ChatWebviewPanel {
     let thinkingHtml = '';
     if (msg.thinking) {
       thinkingHtml = `
-        <details class="chat-details thinking-details" ${isToolsExpanded ? 'open' : ''}>
+        <details class="chat-details thinking-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-thinking">
           <summary title="Click to view AI reasoning and plan">
             <span>🧠</span>
             <span>Model Reasoning & Planning</span>
@@ -4775,7 +5157,7 @@ export class ChatWebviewPanel {
     let toolCallsHtml = '';
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       toolCallsHtml = msg.toolCalls
-        .map((tc) => this.renderToolCall(tc, isToolsExpanded))
+        .map((tc, tcIdx) => this.renderToolCall(tc, isToolsExpanded, `step-${msg.index}-tool-${tcIdx}`))
         .join('\n');
     }
 
@@ -4792,7 +5174,7 @@ export class ChatWebviewPanel {
         .map(p => MarkdownRenderer.render(p))
         .join('\n<hr style="border:none;border-top:1px dashed var(--border-color);margin:8px 0;" />\n');
       systemPayloadsHtml = `
-        <details class="chat-details system-payload-details" ${isToolsExpanded ? 'open' : ''} style="margin-bottom:10px;border-left:2px solid var(--accent-cyan, #00d2ff);">
+        <details class="chat-details system-payload-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-syslogs" style="margin-bottom:10px;border-left:2px solid var(--accent-cyan, #00d2ff);">
           <summary title="Click to view background system events and task completion logs">
             <span>⚙️</span>
             <span><b>System & Background Task Logs</b></span>
@@ -4806,6 +5188,7 @@ export class ChatWebviewPanel {
     }
 
     const rawAiMsgEncoded = encodeURIComponent(msg.cleanContent || msg.content || '');
+    const stepTokenBadge = TokenUsageMonitor.renderStepTokenBadgeHtml(msg);
 
     return `
       <div class="message-card ai" data-step="${msg.index}">
@@ -4813,6 +5196,7 @@ export class ChatWebviewPanel {
           <div class="message-avatar avatar-ai" title="Antigravity AI Response">✨</div>
           <span class="message-sender-name">Antigravity AI</span>
           <span class="message-time">${timeStr}</span>
+          ${stepTokenBadge}
           ${sessionOriginBadge}
           <div class="message-header-actions" style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <span class="meta-step-tag" style="font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono);" title="Execution Timeline Step #${msg.index}">Step #${msg.index}</span>
@@ -4835,10 +5219,31 @@ export class ChatWebviewPanel {
     `;
   }
 
-  private renderToolCall(tool: ToolCallInfo, isOpen: boolean = false): string {
-    const isSuccess = tool.exitCode === 0 || tool.status === 'DONE' || !tool.exitCode;
+  private renderToolCall(tool: ToolCallInfo, isOpen: boolean = false, detailKey?: string): string {
+    if (tool.name === 'send_message') {
+      return ExecutorLayoutHelper.renderSendMessageCardHtml(tool, true);
+    }
+    if (tool.name === 'invoke_subagent') {
+      const sessionsRef = this.allSessionsCache || [];
+      const argsObj: Record<string, any> =
+        typeof tool.args === 'string' ? (() => { try { return JSON.parse(tool.args); } catch { return {}; } })() : (tool.args || {});
+      const cidMatch = tool.output ? String(tool.output).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) : null;
+      const convId = cidMatch ? cidMatch[1].toLowerCase() : undefined;
+      const linkedChild = convId ? sessionsRef.find((s) => s.id.toLowerCase() === convId) : undefined;
+      return ExecutorLayoutHelper.renderInlineSubagentCardHtml(
+        {
+          role: argsObj.Role || argsObj.role,
+          typeName: argsObj.TypeName || argsObj.typeName,
+          conversationId: convId,
+          status: tool.status
+        },
+        linkedChild,
+        true
+      );
+    }
+    const isSuccess = tool.status !== 'ERROR' && (tool.exitCode === undefined || tool.exitCode === 0);
     const badgeClass = isSuccess ? 'success' : 'error';
-    const badgeText = isSuccess ? 'Success' : `Exit ${tool.exitCode}`;
+    const badgeText = isSuccess ? 'Success' : (tool.exitCode !== undefined && tool.exitCode !== 0 ? `Exit ${tool.exitCode}` : 'Error');
 
     let argsPreview = '';
     if (tool.args) {
@@ -4857,8 +5262,10 @@ export class ChatWebviewPanel {
       argsJson = typeof tool.args === 'string' ? tool.args : JSON.stringify(tool.args, null, 2);
     }
 
+    const detailKeyAttr = detailKey ? ` data-detail-key="${detailKey}"` : '';
+
     return `
-      <details class="chat-details tool-details" ${isOpen ? 'open' : ''}>
+      <details class="chat-details tool-details" ${isOpen ? 'open' : ''}${detailKeyAttr}>
         <summary>
           <span>⚙️</span>
           <span><b>Tool:</b> <code>${tool.name}</code></span>

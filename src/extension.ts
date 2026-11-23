@@ -7,6 +7,7 @@ import { SessionScanner } from './services/SessionScanner';
 import { MarkdownExporter } from './services/MarkdownExporter';
 import { ProjectDocsArchiver } from './services/ProjectDocsArchiver';
 import { GitSyncService } from './services/GitSyncService';
+import { TokenUsageMonitor } from './services/TokenUsageMonitor';
 import { ChatSession } from './models/types';
 import { MarkdownPreviewWebviewPanel } from './views/MarkdownPreviewWebviewPanel';
 
@@ -29,6 +30,9 @@ let statusBarItem: vscode.StatusBarItem;
 export function activate(context: vscode.ExtensionContext) {
   console.log('Brain Hub for Antigravity extension is activating in background...');
   DashboardWebviewPanel.setGlobalContext(context);
+  if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+    context.workspaceState.update(DashboardWebviewPanel.LAST_SESSION_STATE_KEY, undefined);
+  }
 
   // 1. Initialize Persistent Index Cache Storage
   const scanner = SessionScanner.getInstance();
@@ -98,23 +102,35 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
+  const tokenMonitor = TokenUsageMonitor.getInstance();
+  tokenMonitor.initialize(context);
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+        context.workspaceState.update(DashboardWebviewPanel.LAST_SESSION_STATE_KEY, undefined);
+      }
       updateTreeViewHeader();
+      treeProvider.refresh();
+      if (DashboardWebviewPanel.currentPanel) {
+        DashboardWebviewPanel.currentPanel.updateContent(false);
+      }
     })
   );
 
   const onSessionsDataChanged = () => {
     treeProvider.refresh();
     updateTreeViewHeader();
+    tokenMonitor.scheduleRefresh(60);
     if (DashboardWebviewPanel.currentPanel) {
       DashboardWebviewPanel.currentPanel.updateContent();
     }
   };
 
   // 3. Listen to Sync events
-  gitSync.onDidSync(() => {
+  gitSync.onDidSync(async () => {
     updateStatusBar();
+    await scanner.scanSessions(false);
     updateTreeViewHeader();
     onSessionsDataChanged();
   });
@@ -202,9 +218,53 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
 
-      if (e.affectsConfiguration('brainHub.defaultGroupExpansion')) {
+      if (
+        e.affectsConfiguration('brainHub.brainPath') ||
+        e.affectsConfiguration('brainHub.additionalBrainPaths') ||
+        e.affectsConfiguration('brainHub.machineName')
+      ) {
+        const watcherEnabled = getAppConfig<boolean>('enableRealtimeWatcher', true);
+        if (watcherEnabled) {
+          scanner.startRealtimeWatcher(onSessionsDataChanged);
+        }
+        void scanner.scanSessions(true).then(() => {
+          onSessionsDataChanged();
+        });
+      }
+
+      if (
+        e.affectsConfiguration('brainHub.defaultGroupExpansion') ||
+        e.affectsConfiguration('brainHub.sessionSortBy') ||
+        e.affectsConfiguration('brainHub.hideEmptySessions')
+      ) {
         onSessionsDataChanged();
       }
+
+      if (
+        e.affectsConfiguration('brainHub.enableTokenStatusBar') ||
+        e.affectsConfiguration('brainHub.tokenWarningThreshold') ||
+        e.affectsConfiguration('brainHub.tokenCriticalThreshold') ||
+        e.affectsConfiguration('brainHub.modelPricing') ||
+        e.affectsConfiguration('brainHub.defaultModelPricing')
+      ) {
+        tokenMonitor.startWatching();
+        tokenMonitor.triggerRefresh();
+        treeProvider.refresh();
+        if (DashboardWebviewPanel.currentPanel) {
+          DashboardWebviewPanel.currentPanel.updateContent();
+        }
+        for (const chatPanel of ChatWebviewPanel.currentPanels.values()) {
+          chatPanel.updateContent(false);
+        }
+      }
+    })
+  );
+
+  // Command: Inspect Active Session Token Usage (Status Bar Click)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('brainHub.openActiveTokenSession', async () => {
+      const activeId = tokenMonitor.getActiveSessionId();
+      DashboardWebviewPanel.createOrShow(context.extensionUri, activeId);
     })
   );
 
@@ -241,10 +301,6 @@ export function activate(context: vscode.ExtensionContext) {
       statusBarItem.text = '$(sync~spin) Syncing...';
       try {
         await gitSync.syncWithRemote();
-        treeProvider.refresh();
-        if (DashboardWebviewPanel.currentPanel) {
-          DashboardWebviewPanel.currentPanel.updateContent();
-        }
       } finally {
         statusBarItem.text = '$(github) Brain Hub Sync';
         updateStatusBar();
@@ -303,7 +359,7 @@ export function activate(context: vscode.ExtensionContext) {
       await scanner.scanSessions(true);
       treeProvider.refresh();
       if (DashboardWebviewPanel.currentPanel) {
-        await DashboardWebviewPanel.currentPanel.updateContent();
+        await DashboardWebviewPanel.currentPanel.updateContent(true);
       }
       vscode.window.showInformationMessage('Antigravity sessions refreshed.');
     })
@@ -571,12 +627,7 @@ export function activate(context: vscode.ExtensionContext) {
       let targetSessions = allSessions;
 
       if (activeWs) {
-        const wsLower = activeWs.toLowerCase().replace(/\\/g, '/');
-        targetSessions = allSessions.filter((s) => {
-          if (!s.workspacePath) return false;
-          const sWsLower = s.workspacePath.toLowerCase().replace(/\\/g, '/');
-          return sWsLower === wsLower || wsLower.startsWith(sWsLower) || sWsLower.startsWith(wsLower);
-        });
+        targetSessions = allSessions.filter((s) => SessionScanner.isPathBoundaryMatch(s.workspacePath, activeWs));
       }
 
       if (targetSessions.length === 0) {
@@ -641,6 +692,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+  TokenUsageMonitor.getInstance().dispose();
   GitSyncService.getInstance().stopAutoSyncTimer();
   SessionScanner.getInstance().stopRealtimeWatcher();
   SessionScanner.getInstance().stopBackgroundScanTimer();

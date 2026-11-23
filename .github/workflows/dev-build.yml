@@ -17,14 +17,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -60,10 +60,10 @@ jobs:
             --title "Brain Hub Dev Build (v${VERSION})" \
             --notes "Automated rolling development build for multi-machine synchronization.
 
-          - **Version**: `v${VERSION}`
-          - **Source Commit**: `${{ github.sha }}`
-          - **Source Branch**: `${{ github.ref_name }}`
-          - **Triggered by**: `${{ github.actor }}`
+          - **Version**: \`v${VERSION}\`
+          - **Source Commit**: \`${{ github.sha }}\`
+          - **Source Branch**: \`${{ github.ref_name }}\`
+          - **Triggered by**: \`${{ github.actor }}\`
 
-          Download **`brain-hub-antigravity-dev-latest.vsix`** below to install manually without rebuilding." \
+          Download **\`brain-hub-antigravity-dev-latest.vsix\`** below to install manually without rebuilding." \
             --prerelease

@@ -2,7 +2,7 @@
   "name": "brain-hub-antigravity",
   "displayName": "Brain Hub for Antigravity",
   "description": "Search, view, resume, and sync Antigravity Brain sessions across machines.",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "publisher": "chiriforge",
   "license": "MIT",
   "repository": {
@@ -41,7 +41,7 @@
       "activitybar": [
         {
           "id": "brain-hub",
-          "title": "Brain Hub for Antigravity",
+          "title": "Brain Hub",
           "icon": "media/icon.svg"
         }
       ]
@@ -181,6 +181,12 @@
         "category": "Brain Hub",
         "title": "Export Markdown to PDF",
         "icon": "$(output)"
+      },
+      {
+        "command": "brainHub.openActiveTokenSession",
+        "category": "Brain Hub",
+        "title": "Inspect Active Session Token Usage",
+        "icon": "$(pulse)"
       }
     ],
     "menus": {
@@ -321,7 +327,7 @@
         "brainHub.brainPath": {
           "type": "string",
           "default": "",
-          "description": "Primary path to Antigravity brain directory (defaults to ~/.gemini/antigravity-ide/brain)"
+          "description": "Primary path to Antigravity brain directory (defaults to ~/.gemini/antigravity/brain, or ~/.gemini/antigravity-ide/brain if only legacy folder exists)"
         },
         "brainHub.additionalBrainPaths": {
           "type": "array",
@@ -428,6 +434,19 @@
           "default": "collapsed",
           "description": "Default expand/collapse state for autonomous AI execution steps"
         },
+        "brainHub.defaultHeaderState": {
+          "type": "string",
+          "enum": [
+            "expanded",
+            "collapsed"
+          ],
+          "enumDescriptions": [
+            "Header pills, toolbar, and full token bar expanded",
+            "Header collapsed into a compact 1-line summary bar"
+          ],
+          "default": "expanded",
+          "description": "Default expand/collapse state for the reader header (pills, toolbar, and full token strip)"
+        },
         "brainHub.defaultGroupExpansion": {
           "type": "string",
           "enum": [
@@ -485,6 +504,144 @@
           },
           "default": [],
           "description": "Additional custom regex patterns to detect and mask from exported logs and markdown documents"
+        },
+        "brainHub.enableTokenStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show near real-time Antigravity token & context usage in the VS Code status bar."
+        },
+        "brainHub.tokenWarningThreshold": {
+          "type": "number",
+          "default": 100000,
+          "description": "Context window token threshold (input + cache_read) to trigger a yellow warning state."
+        },
+        "brainHub.tokenCriticalThreshold": {
+          "type": "number",
+          "default": 150000,
+          "description": "Context window token threshold (input + cache_read) to trigger a red critical state recommending /compact."
+        },
+        "brainHub.modelPricing": {
+          "type": "array",
+          "description": "Configurable per-model token pricing rules (USD per 1M tokens) matched case-insensitively by substring pattern against transcript step model names.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "Case-insensitive substring pattern to match step model identifier (e.g. 'hydrogen', '3.8-flash', 'flash', 'argon', 'carbon')."
+              },
+              "label": {
+                "type": "string",
+                "description": "Human-readable model label for cost tooltips."
+              },
+              "inputPer1M": {
+                "type": "number",
+                "description": "USD price per 1M uncached input tokens."
+              },
+              "outputPer1M": {
+                "type": "number",
+                "description": "USD price per 1M output tokens."
+              },
+              "cachedPer1M": {
+                "type": "number",
+                "description": "USD price per 1M cached read tokens."
+              },
+              "warningThreshold": {
+                "type": "number",
+                "description": "Optional context window token threshold triggering a yellow warning dot for this model."
+              },
+              "criticalThreshold": {
+                "type": "number",
+                "description": "Optional context window token threshold triggering a red /compact warning dot for this model."
+              }
+            },
+            "required": [
+              "pattern",
+              "inputPer1M",
+              "outputPer1M",
+              "cachedPer1M"
+            ]
+          },
+          "default": [
+            {
+              "pattern": "hydrogen",
+              "label": "Gemini 4 Hydrogen",
+              "inputPer1M": 1.5,
+              "outputPer1M": 7.5,
+              "cachedPer1M": 0.075,
+              "warningThreshold": 205000,
+              "criticalThreshold": 240000
+            },
+            {
+              "pattern": "3.8-flash",
+              "label": "Gemini 3.8 Flash",
+              "inputPer1M": 0.75,
+              "outputPer1M": 3.75,
+              "cachedPer1M": 0.075,
+              "warningThreshold": 200000,
+              "criticalThreshold": 235000
+            },
+            {
+              "pattern": "flash",
+              "label": "Gemini Flash",
+              "inputPer1M": 0.75,
+              "outputPer1M": 3.75,
+              "cachedPer1M": 0.075,
+              "warningThreshold": 200000,
+              "criticalThreshold": 235000
+            },
+            {
+              "pattern": "argon",
+              "label": "Gemini 4 Argon",
+              "inputPer1M": 2,
+              "outputPer1M": 10,
+              "cachedPer1M": 0.1,
+              "warningThreshold": 285000,
+              "criticalThreshold": 335000
+            },
+            {
+              "pattern": "carbon",
+              "label": "Gemini 4 Carbon",
+              "inputPer1M": 2,
+              "outputPer1M": 10,
+              "cachedPer1M": 0.1,
+              "warningThreshold": 285000,
+              "criticalThreshold": 335000
+            },
+            {
+              "pattern": "claude",
+              "label": "Claude",
+              "inputPer1M": 3,
+              "outputPer1M": 15,
+              "cachedPer1M": 0.3,
+              "warningThreshold": 150000,
+              "criticalThreshold": 180000
+            }
+          ]
+        },
+        "brainHub.defaultModelPricing": {
+          "type": "object",
+          "description": "Fallback USD pricing per 1M tokens when a transcript step omits model metadata or matches no rule in brainHub.modelPricing.",
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "inputPer1M": {
+              "type": "number"
+            },
+            "outputPer1M": {
+              "type": "number"
+            },
+            "cachedPer1M": {
+              "type": "number"
+            }
+          },
+          "default": {
+            "label": "Default (Hydrogen)",
+            "inputPer1M": 1.5,
+            "outputPer1M": 7.5,
+            "cachedPer1M": 0.075
+          }
         }
       }
     }
@@ -502,8 +659,8 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.80.0",
-    "@vscode/vsce": "^2.24.0",
-    "esbuild": "^0.20.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.3.3"
   },
   "dependencies": {

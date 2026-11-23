@@ -1,14 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ChatMessage, ChatSession, ToolCallInfo } from '../models/types';
+import { ChatMessage, ChatSession, SwarmSessionData, ToolCallInfo } from '../models/types';
 import { SessionScanner } from '../services/SessionScanner';
+import { TokenUsageMonitor } from '../services/TokenUsageMonitor';
 import { MarkdownRenderer } from '../services/MarkdownRenderer';
 import { MarkdownExporter } from '../services/MarkdownExporter';
 import { GitSyncService } from '../services/GitSyncService';
 import { KATEX_CSS, getKaTeXCss } from '../services/KaTeXStyles';
 import { HIGHLIGHT_CSS } from '../services/HighlightStyles';
 import { MarkdownPreviewWebviewPanel } from './MarkdownPreviewWebviewPanel';
+import { HeaderLayoutHelper } from './HeaderLayoutHelper';
+import { ExecutorLayoutHelper } from './ExecutorLayoutHelper';
 
 interface AppConfigState {
   machineName: string;
@@ -24,6 +27,7 @@ interface AppConfigState {
   sessionSortBy: 'lastModified' | 'createdAt';
   defaultToolsState: 'collapsed' | 'expanded';
   defaultAiStepsState: 'collapsed' | 'expanded';
+  defaultHeaderState: 'expanded' | 'collapsed';
 }
 
 interface MessageRenderItem {
@@ -36,6 +40,7 @@ export class DashboardWebviewPanel {
   public static currentPanel: DashboardWebviewPanel | undefined;
   public static globalContext?: vscode.ExtensionContext;
   public static treeProvider?: any;
+  public static readonly LAST_SESSION_STATE_KEY = 'brainHub.lastSessionId';
 
   public static setGlobalContext(ctx: vscode.ExtensionContext): void {
     DashboardWebviewPanel.globalContext = ctx;
@@ -43,6 +48,145 @@ export class DashboardWebviewPanel {
 
   public static setTreeProvider(provider: any): void {
     DashboardWebviewPanel.treeProvider = provider;
+  }
+
+  public static getOrderedWorkspaceFolders(): readonly vscode.WorkspaceFolder[] {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return [];
+    }
+    const activeUri = vscode.window.activeTextEditor?.document?.uri;
+    if (activeUri && typeof vscode.workspace.getWorkspaceFolder === 'function') {
+      const activeFolder = vscode.workspace.getWorkspaceFolder(activeUri);
+      if (activeFolder) {
+        const activeNorm = SessionScanner.normalizeWorkspacePath(activeFolder.uri.fsPath);
+        return [
+          activeFolder,
+          ...folders.filter((f) => SessionScanner.normalizeWorkspacePath(f.uri.fsPath) !== activeNorm)
+        ];
+      }
+    }
+    return folders;
+  }
+
+  public static persistWorkspaceSessionAffinity(session: ChatSession | undefined | null): void {
+    if (!session || !session.id) {
+      return;
+    }
+    const orderedFolders = DashboardWebviewPanel.getOrderedWorkspaceFolders();
+    if (orderedFolders.length === 0) {
+      DashboardWebviewPanel.globalContext?.workspaceState.update(DashboardWebviewPanel.LAST_SESSION_STATE_KEY, undefined);
+      return;
+    }
+    const isEligible =
+      !session.workspacePath ||
+      orderedFolders.some((f) => SessionScanner.matchSessionToWorkspaceFolder(session, f.uri.fsPath, f.name) !== null);
+    if (isEligible) {
+      DashboardWebviewPanel.globalContext?.workspaceState.update(DashboardWebviewPanel.LAST_SESSION_STATE_KEY, session.id);
+    }
+  }
+
+  public static resolveInitialSessionId(sessions: ChatSession[], explicitSessionId?: string): string | undefined {
+    if (!sessions || sessions.length === 0) {
+      return explicitSessionId;
+    }
+
+    const sortBy = vscode.workspace.getConfiguration('brainHub').get<string>('sessionSortBy', 'lastModified');
+    const getSortTime = (s: ChatSession): number => {
+      if (sortBy === 'createdAt') {
+        return (s.createdAt || s.lastModified || new Date(0)).getTime();
+      }
+      return (s.lastModified || s.createdAt || new Date(0)).getTime();
+    };
+
+    const sortedSessions = [...sessions].sort((a, b) => getSortTime(b) - getSortTime(a));
+
+    // Layer 0: Explicit Session ID override
+    if (explicitSessionId) {
+      const explicitMatch = sortedSessions.find((s) => s.id === explicitSessionId);
+      if (explicitMatch) {
+        DashboardWebviewPanel.persistWorkspaceSessionAffinity(explicitMatch);
+        return explicitMatch.id;
+      }
+      return explicitSessionId;
+    }
+
+    // Empty Window Guard
+    const orderedFolders = DashboardWebviewPanel.getOrderedWorkspaceFolders();
+    if (orderedFolders.length === 0) {
+      DashboardWebviewPanel.globalContext?.workspaceState.update(DashboardWebviewPanel.LAST_SESSION_STATE_KEY, undefined);
+      return (sortedSessions.find((s) => !s.executorParentId) || sortedSessions[0])?.id;
+    }
+
+    // Layer 1: Latest Session of Current Workspace via SessionScanner (Tier 1A Path -> Tier 1B Name, preferring top-level)
+    let layer1Candidate: ChatSession | undefined;
+    for (const folder of orderedFolders) {
+      const match1A =
+        sortedSessions.find(
+          (s) => !s.executorParentId && SessionScanner.matchSessionToWorkspaceFolder(s, folder.uri.fsPath, folder.name) === 'tier1a_path'
+        ) ||
+        sortedSessions.find(
+          (s) => SessionScanner.matchSessionToWorkspaceFolder(s, folder.uri.fsPath, folder.name) === 'tier1a_path'
+        );
+      if (match1A) {
+        layer1Candidate = match1A;
+        break;
+      }
+    }
+    if (!layer1Candidate) {
+      for (const folder of orderedFolders) {
+        const match1B =
+          sortedSessions.find(
+            (s) => !s.executorParentId && SessionScanner.matchSessionToWorkspaceFolder(s, folder.uri.fsPath, folder.name) === 'tier1b_name'
+          ) ||
+          sortedSessions.find(
+            (s) => SessionScanner.matchSessionToWorkspaceFolder(s, folder.uri.fsPath, folder.name) === 'tier1b_name'
+          );
+        if (match1B) {
+          layer1Candidate = match1B;
+          break;
+        }
+      }
+    }
+
+    // Layer 2: context.workspaceState Affinity Fallback
+    const lastStateId = DashboardWebviewPanel.globalContext?.workspaceState.get<string>(
+      DashboardWebviewPanel.LAST_SESSION_STATE_KEY
+    );
+    let layer2Candidate: ChatSession | undefined;
+    if (lastStateId) {
+      const foundStateSession = sortedSessions.find((s) => s.id === lastStateId);
+      if (foundStateSession) {
+        const isEligible =
+          !foundStateSession.workspacePath ||
+          orderedFolders.some(
+            (f) => SessionScanner.matchSessionToWorkspaceFolder(foundStateSession, f.uri.fsPath, f.name) !== null
+          );
+        if (isEligible) {
+          layer2Candidate = foundStateSession;
+        }
+      }
+    }
+
+    if (layer1Candidate && layer2Candidate) {
+      if (!layer2Candidate.workspacePath && getSortTime(layer2Candidate) > getSortTime(layer1Candidate)) {
+        return layer2Candidate.id;
+      }
+      DashboardWebviewPanel.persistWorkspaceSessionAffinity(layer1Candidate);
+      return layer1Candidate.id;
+    }
+
+    if (layer1Candidate) {
+      DashboardWebviewPanel.persistWorkspaceSessionAffinity(layer1Candidate);
+      return layer1Candidate.id;
+    }
+
+    if (layer2Candidate) {
+      return layer2Candidate.id;
+    }
+
+    // Layer 3: Global Latest Fallback (prefer top-level)
+    return (sortedSessions.find((s) => !s.executorParentId) || sortedSessions[0])?.id;
   }
 
   private static cachedCodiconCss: string = '';
@@ -53,17 +197,35 @@ export class DashboardWebviewPanel {
   private disposables: vscode.Disposable[] = [];
   private selectedSessionId?: string;
   private isShowingCombinedThread: boolean = false;
+  private activeExecutorTab: 'transcript' | 'progress' | 'swarm' = 'transcript';
+  private allSessionsCache: ChatSession[] = [];
   private sessionWatcher?: fs.FSWatcher;
+  private swarmWatcher?: fs.FSWatcher;
   private sessionPollingTimer?: NodeJS.Timeout;
   private reloadDebounceTimer?: NodeJS.Timeout;
   private isHtmlInitialized: boolean = false;
+  private isDisposed: boolean = false;
   private lastActiveSessionModTime: number = 0;
   private lastActiveSessionMsgCount: number = 0;
+  private lastActiveSessionStepCount: number = 0;
   private lastWatchedFileSize: number = 0;
   private lastWatchedFileMtime: number = 0;
+  private lastTreeChangeSignature: string = '';
+  private lastLiveSidebarSignature: string = '';
   private isWebviewReady: boolean = false;
   private pendingReaderUpdate: { sessionId: string; isLiveUpdate?: boolean; forceScrollEdge?: 'top' | 'bottom' | boolean } | null = null;
   private activeReaderSequenceId: number = 0;
+
+  private async safePostMessage(message: unknown): Promise<void> {
+    if (this.isDisposed) {
+      return;
+    }
+    try {
+      await this.panel.webview.postMessage(message);
+    } catch {
+      // Ignore postMessage errors if webview was disposed concurrently
+    }
+  }
 
   public static createOrShow(
     extensionUri: vscode.Uri,
@@ -98,7 +260,7 @@ export class DashboardWebviewPanel {
 
     const panel = vscode.window.createWebviewPanel(
       'brainHubDashboard',
-      'Brain Hub for Antigravity',
+      'Brain Hub',
       vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -137,8 +299,8 @@ export class DashboardWebviewPanel {
     const scanner = SessionScanner.getInstance();
     if (scanner.hasValidCache()) {
       const cachedSessions = scanner.getCachedSessions();
-      if (!this.selectedSessionId && cachedSessions.length > 0) {
-        this.selectedSessionId = cachedSessions[0].id;
+      if (cachedSessions.length > 0) {
+        this.selectedSessionId = DashboardWebviewPanel.resolveInitialSessionId(cachedSessions, this.selectedSessionId);
       }
       const activeSession = this.selectedSessionId
         ? cachedSessions.find((s) => s.id === this.selectedSessionId) || cachedSessions[0]
@@ -182,7 +344,9 @@ export class DashboardWebviewPanel {
           case 'dashboardReady':
             this.isWebviewReady = true;
             clearTimeout(readyFallbackTimer);
-            if (this.pendingReaderUpdate) {
+            if (!this.isHtmlInitialized || !this.selectedSessionId) {
+              await this.updateContent();
+            } else if (this.pendingReaderUpdate) {
               const pending = this.pendingReaderUpdate;
               this.pendingReaderUpdate = null;
               await this.updateReaderOnly(pending.sessionId, pending.isLiveUpdate, pending.forceScrollEdge);
@@ -191,11 +355,27 @@ export class DashboardWebviewPanel {
             }
             break;
 
-          case 'selectSession':
+          case 'selectSession': {
             this.selectedSessionId = message.sessionId;
             this.isShowingCombinedThread = false;
+            this.activeExecutorTab = 'transcript';
+            const listForAffinity = scanner.hasValidCache()
+              ? scanner.getCachedSessions()
+              : await scanner.scanSessions(false);
+            const selectedObj = listForAffinity.find((s) => s.id === message.sessionId);
+            DashboardWebviewPanel.persistWorkspaceSessionAffinity(selectedObj);
             await this.updateReaderOnly(message.sessionId);
             break;
+          }
+
+          case 'toggleExecutorTab': {
+            const tab = message.tab;
+            this.activeExecutorTab = tab === 'progress' || tab === 'swarm' ? tab : 'transcript';
+            if (this.selectedSessionId) {
+              await this.updateReaderOnly(this.selectedSessionId, false);
+            }
+            break;
+          }
 
           case 'selectLatestSession':
             const allLatestSessions = await SessionScanner.getInstance().scanSessions();
@@ -207,9 +387,11 @@ export class DashboardWebviewPanel {
                 }
                 return b.lastModified.getTime() - a.lastModified.getTime();
               });
-              const latestId = sorted[0].id;
+              const latestId = DashboardWebviewPanel.resolveInitialSessionId(sorted) || sorted[0].id;
               this.selectedSessionId = latestId;
               this.isShowingCombinedThread = false;
+              const latestObj = sorted.find((s) => s.id === latestId);
+              DashboardWebviewPanel.persistWorkspaceSessionAffinity(latestObj);
               const cfgOrder = vscode.workspace.getConfiguration('brainHub').get<string>('messageOrder', 'newestFirst');
 
               if (this.isHtmlInitialized) {
@@ -230,6 +412,12 @@ export class DashboardWebviewPanel {
           case 'setSidebarCollapsed':
             DashboardWebviewPanel.globalContext?.globalState.update('dashboardSidebarCollapsed', !!message.collapsed);
             break;
+
+          case 'setHeaderCollapsed': {
+            const nextState = message.collapsed ? 'collapsed' : 'expanded';
+            await vscode.workspace.getConfiguration('brainHub').update('defaultHeaderState', nextState, vscode.ConfigurationTarget.Global);
+            break;
+          }
 
           case 'toggleThreadMode':
             this.isShowingCombinedThread = !this.isShowingCombinedThread;
@@ -407,6 +595,9 @@ export class DashboardWebviewPanel {
               if (message.settings.defaultAiStepsState !== undefined) {
                 await cfg.update('defaultAiStepsState', message.settings.defaultAiStepsState, vscode.ConfigurationTarget.Global);
               }
+              if (message.settings.defaultHeaderState !== undefined) {
+                await cfg.update('defaultHeaderState', message.settings.defaultHeaderState, vscode.ConfigurationTarget.Global);
+              }
               if (message.settings.autoSyncOnStartup !== undefined) {
                 await cfg.update('autoSyncOnStartup', !!message.settings.autoSyncOnStartup, vscode.ConfigurationTarget.Global);
               }
@@ -430,9 +621,19 @@ export class DashboardWebviewPanel {
                 await GitSyncService.getInstance().setupGitRepo(message.settings.gitRemoteUrl.trim());
               }
 
+              if (cfg.get<boolean>('enableRealtimeWatcher', true)) {
+                scanner.startRealtimeWatcher(() => {
+                  DashboardWebviewPanel.treeProvider?.refresh();
+                  if (DashboardWebviewPanel.currentPanel) {
+                    DashboardWebviewPanel.currentPanel.updateContent();
+                  }
+                });
+              }
+
               vscode.window.showInformationMessage('Brain Hub settings saved successfully!');
               this.isHtmlInitialized = false;
               await this.updateContent(true);
+              DashboardWebviewPanel.treeProvider?.refresh();
             }
             break;
         }
@@ -559,13 +760,17 @@ export class DashboardWebviewPanel {
     }
 
     let filePath = rawPath.trim();
-    try {
-      filePath = decodeURIComponent(filePath);
-    } catch {}
+    if (!fs.existsSync(filePath)) {
+      try {
+        filePath = decodeURIComponent(filePath);
+      } catch {}
+    }
     filePath = filePath.replace(/^file:\/{1,3}/i, '');
-    try {
-      filePath = decodeURIComponent(filePath);
-    } catch {}
+    if (!fs.existsSync(filePath)) {
+      try {
+        filePath = decodeURIComponent(filePath);
+      } catch {}
+    }
 
     let startLine = 0;
     let endLine = 0;
@@ -731,37 +936,88 @@ export class DashboardWebviewPanel {
     return null;
   }
 
-  private setupSessionWatcher(sessionId: string, sessionPath: string): void {
+  private computeTreePollSignature(treeSessions: ChatSession[]): string {
+    const parts: string[] = [];
+    for (const s of treeSessions) {
+      if (!s.path) continue;
+      const logsDir = path.join(s.path, '.system_generated', 'logs');
+      const fullTf = path.join(logsDir, 'transcript_full.jsonl');
+      const tf = path.join(logsDir, 'transcript.jsonl');
+      const target = fs.existsSync(fullTf) ? fullTf : tf;
+      try {
+        if (fs.existsSync(target)) {
+          const st = fs.statSync(target);
+          parts.push(`${s.id}:${st.size}:${Math.floor(st.mtimeMs)}`);
+        }
+      } catch {}
+      const subagentsDir = path.join(s.path, '.system_generated', 'subagents');
+      try {
+        if (fs.existsSync(subagentsDir)) {
+          const subFiles = fs.readdirSync(subagentsDir).filter((f) => f.endsWith('.json')).sort();
+          for (const f of subFiles) {
+            const st = fs.statSync(path.join(subagentsDir, f));
+            parts.push(`sub:${s.id}:${f}:${st.size}:${Math.floor(st.mtimeMs)}`);
+          }
+        }
+      } catch {}
+    }
+    const root = treeSessions.find((s) => !s.executorParentId) || treeSessions[0];
+    if (root?.path) {
+      const swarmDir = path.join(root.path, '.system_generated', 'swarm');
+      for (const f of ['members.json', 'board.jsonl', 'view.json', 'plan.json']) {
+        const fp = path.join(swarmDir, f);
+        try {
+          if (fs.existsSync(fp)) {
+            const st = fs.statSync(fp);
+            parts.push(`sw:${f}:${st.size}:${Math.floor(st.mtimeMs)}`);
+          }
+        } catch {}
+      }
+    }
+    return parts.join('|');
+  }
+
+  private setupSessionWatcher(sessionId: string, sessionPath?: string, treeSessions: ChatSession[] = []): void {
     this.disposeSessionWatcher();
 
     const autoReload = vscode.workspace.getConfiguration('brainHub').get<boolean>('autoReloadOnLiveChat', true);
-    if (!autoReload) {
+    if (!autoReload || !sessionPath) {
       return;
     }
 
     const logsDir = path.join(sessionPath, '.system_generated', 'logs');
     const watchTarget = fs.existsSync(logsDir) ? logsDir : sessionPath;
+    const triggerDebouncedReload = () => {
+      if (this.reloadDebounceTimer) {
+        clearTimeout(this.reloadDebounceTimer);
+      }
+      this.reloadDebounceTimer = setTimeout(async () => {
+        if (this.selectedSessionId === sessionId) {
+          await this.updateReaderOnly(sessionId, true);
+        }
+      }, 300);
+    };
 
     try {
       if (fs.existsSync(watchTarget)) {
-        this.sessionWatcher = fs.watch(watchTarget, { recursive: true }, (eventType, filename) => {
-          if (!filename || filename.includes('transcript') || filename.endsWith('.jsonl') || filename.endsWith('.md')) {
-            if (this.reloadDebounceTimer) {
-              clearTimeout(this.reloadDebounceTimer);
-            }
-            this.reloadDebounceTimer = setTimeout(async () => {
-              if (this.selectedSessionId === sessionId) {
-                await this.updateReaderOnly(sessionId, true);
-              }
-            }, 300);
+        this.sessionWatcher = fs.watch(watchTarget, { recursive: true }, (_eventType, filename) => {
+          if (!filename || filename.includes('transcript') || filename.endsWith('.jsonl') || filename.endsWith('.md') || filename.endsWith('.json')) {
+            triggerDebouncedReload();
           }
+        });
+      }
+      const root = treeSessions.find((s) => !s.executorParentId);
+      const swarmDir = root?.path ? path.join(root.path, '.system_generated', 'swarm') : path.join(sessionPath, '.system_generated', 'swarm');
+      if (fs.existsSync(swarmDir)) {
+        this.swarmWatcher = fs.watch(swarmDir, { recursive: false }, () => {
+          triggerDebouncedReload();
         });
       }
     } catch (err) {
       console.warn(`Could not setup session watcher for ${sessionId}:`, err);
     }
 
-    // Active polling fallback for Windows file watcher reliability
+    // Active polling fallback for Windows file watcher reliability & descendant tree progress
     const transcriptFile = path.join(logsDir, 'transcript.jsonl');
     const fullTranscriptFile = path.join(logsDir, 'transcript_full.jsonl');
     try {
@@ -771,6 +1027,9 @@ export class DashboardWebviewPanel {
         this.lastWatchedFileSize = st.size;
         this.lastWatchedFileMtime = st.mtimeMs;
       }
+      if (treeSessions.length > 0) {
+        this.lastTreeChangeSignature = this.computeTreePollSignature(treeSessions);
+      }
     } catch {}
 
     this.sessionPollingTimer = setInterval(async () => {
@@ -778,14 +1037,32 @@ export class DashboardWebviewPanel {
         return;
       }
       try {
+        let changed = false;
         const targetFile = fs.existsSync(fullTranscriptFile) ? fullTranscriptFile : (fs.existsSync(transcriptFile) ? transcriptFile : null);
         if (targetFile && fs.existsSync(targetFile)) {
           const st = await fs.promises.stat(targetFile);
           if (st.size !== this.lastWatchedFileSize || st.mtimeMs !== this.lastWatchedFileMtime) {
             this.lastWatchedFileSize = st.size;
             this.lastWatchedFileMtime = st.mtimeMs;
-            await this.updateReaderOnly(sessionId, true);
+            changed = true;
           }
+        }
+        const liveCache = this.allSessionsCache.length > 0 ? this.allSessionsCache : treeSessions;
+        const activeInCache = liveCache.find((s) => s.id === sessionId);
+        const rootId = activeInCache?.executorRootId || sessionId;
+        const rootInCache = liveCache.find((s) => s.id === rootId) || activeInCache;
+        const pollTree = rootInCache
+          ? [rootInCache, ...ExecutorLayoutHelper.collectExecutorDescendants(rootInCache, liveCache)]
+          : treeSessions;
+        if (!changed && pollTree.length > 0) {
+          const sig = this.computeTreePollSignature(pollTree);
+          if (sig !== this.lastTreeChangeSignature) {
+            this.lastTreeChangeSignature = sig;
+            changed = true;
+          }
+        }
+        if (changed) {
+          await this.updateReaderOnly(sessionId, true);
         }
       } catch {}
     }, 2000);
@@ -808,11 +1085,17 @@ export class DashboardWebviewPanel {
       }
       this.sessionWatcher = undefined;
     }
+    if (this.swarmWatcher) {
+      try {
+        this.swarmWatcher.close();
+      } catch {}
+      this.swarmWatcher = undefined;
+    }
   }
 
   private getAppConfigState(gitRemoteUrl: string = ''): AppConfigState {
     const cfg = vscode.workspace.getConfiguration('brainHub');
-    const scanner = SessionScanner.getInstance();
+    const gitSync = GitSyncService.getInstance();
     return {
       machineName: cfg.get<string>('machineName', ''),
       autoSyncOnStartup: cfg.get<boolean>('autoSyncOnStartup', true),
@@ -822,11 +1105,12 @@ export class DashboardWebviewPanel {
       autoReloadOnLiveChat: cfg.get<boolean>('autoReloadOnLiveChat', true),
       brainPath: cfg.get<string>('brainPath', ''),
       gitRemoteUrl,
-      defaultBrainDir: scanner.getDefaultBrainDirectory(),
+      defaultBrainDir: gitSync.getBrainDir(),
       messageOrder: cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst'),
       sessionSortBy: cfg.get<'lastModified' | 'createdAt'>('sessionSortBy', 'lastModified'),
       defaultToolsState: cfg.get<'collapsed' | 'expanded'>('defaultToolsState', 'collapsed'),
-      defaultAiStepsState: cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed')
+      defaultAiStepsState: cfg.get<'collapsed' | 'expanded'>('defaultAiStepsState', 'collapsed'),
+      defaultHeaderState: cfg.get<'expanded' | 'collapsed'>('defaultHeaderState', 'expanded')
     };
   }
 
@@ -835,8 +1119,9 @@ export class DashboardWebviewPanel {
     this.isShowingCombinedThread = false;
     const scanner = SessionScanner.getInstance();
     const sessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
-    const exists = sessions.some((s) => s.id === sessionId);
-    if (!exists) {
+    const selectedObj = sessions.find((s) => s.id === sessionId);
+    DashboardWebviewPanel.persistWorkspaceSessionAffinity(selectedObj);
+    if (!selectedObj) {
       await this.updateContent(true);
     } else {
       await this.updateReaderOnly(sessionId);
@@ -848,6 +1133,9 @@ export class DashboardWebviewPanel {
     isLiveUpdate: boolean = false,
     forceScrollEdge?: 'top' | 'bottom' | boolean
   ): Promise<void> {
+    if (this.isDisposed) {
+      return;
+    }
     if (!this.isWebviewReady) {
       this.pendingReaderUpdate = { sessionId, isLiveUpdate, forceScrollEdge };
       return;
@@ -858,6 +1146,9 @@ export class DashboardWebviewPanel {
     try {
       const scanner = SessionScanner.getInstance();
       const sessions = scanner.hasValidCache() ? scanner.getCachedSessions() : await scanner.scanSessions(false);
+      if (this.isDisposed || currentSequenceId !== this.activeReaderSequenceId) {
+        return;
+      }
       
       let activeSession: ChatSession | undefined = undefined;
       let activeMessages: ChatMessage[] = [];
@@ -865,7 +1156,7 @@ export class DashboardWebviewPanel {
 
       if (this.isShowingCombinedThread) {
         const threadData = await scanner.loadFullThread(sessionId);
-        if (currentSequenceId !== this.activeReaderSequenceId) {
+        if (this.isDisposed || currentSequenceId !== this.activeReaderSequenceId) {
           return;
         }
         if (threadData) {
@@ -875,7 +1166,7 @@ export class DashboardWebviewPanel {
         }
       } else {
         const sessionData = await scanner.loadFullSession(sessionId);
-        if (currentSequenceId !== this.activeReaderSequenceId) {
+        if (this.isDisposed || currentSequenceId !== this.activeReaderSequenceId) {
           return;
         }
         if (sessionData) {
@@ -883,11 +1174,23 @@ export class DashboardWebviewPanel {
           activeMessages = sessionData.messages;
           const targetInList = sessions.find((s) => s.id === sessionId);
           if (targetInList) {
-            targetInList.messageCount = sessionData.session.userPromptCount || sessionData.messages.filter(m => m.type === 'USER_INPUT').length;
+            targetInList.messageCount =
+              sessionData.session.userPromptCount ||
+              sessionData.messages.filter((m) => m.type === 'USER_INPUT').length ||
+              sessionData.messages.length;
             activeSession.rootId = targetInList.rootId || activeSession.rootId || activeSession.id;
             activeSession.childIds = targetInList.childIds || activeSession.childIds || [];
             activeSession.parentId = activeSession.parentId || targetInList.parentId;
             activeSession.threadTitle = targetInList.threadTitle || activeSession.threadTitle;
+            activeSession.executorParentId = targetInList.executorParentId;
+            activeSession.executorRootId = targetInList.executorRootId;
+            activeSession.executorDepth = targetInList.executorDepth;
+            activeSession.executorRole = targetInList.executorRole || activeSession.executorRole;
+            activeSession.executorTypeName = targetInList.executorTypeName || activeSession.executorTypeName;
+            activeSession.executorRefs = targetInList.executorRefs || activeSession.executorRefs;
+            activeSession.executorStatus = targetInList.executorStatus ?? activeSession.executorStatus;
+            activeSession.treeTokenUsage = targetInList.treeTokenUsage;
+            activeSession.swarmSummary = targetInList.swarmSummary ?? activeSession.swarmSummary;
           }
           const rootId = targetInList?.rootId || activeSession.rootId || activeSession.id;
           threadSessions = sessions.filter((s) => (s.rootId || s.id) === rootId || s.id === rootId);
@@ -895,7 +1198,7 @@ export class DashboardWebviewPanel {
         }
       }
 
-      if (currentSequenceId !== this.activeReaderSequenceId) {
+      if (this.isDisposed || currentSequenceId !== this.activeReaderSequenceId) {
         return;
       }
 
@@ -904,34 +1207,136 @@ export class DashboardWebviewPanel {
         return;
       }
 
-      this.lastActiveSessionModTime = (activeSession.lastModified || activeSession.createdAt).getTime();
-      this.lastActiveSessionMsgCount = activeSession.messageCount || 0;
+      if (isLiveUpdate) {
+        // Re-scan sessions lightweightly so descendant step counts, statuses, and treeTokenUsage reflect latest writes
+        const freshSessions = await scanner.scanSessions(false);
+        if (this.isDisposed || currentSequenceId !== this.activeReaderSequenceId) {
+          return;
+        }
+        if (freshSessions.length > 0) {
+          sessions.splice(0, sessions.length, ...freshSessions);
+          const refreshedActive = freshSessions.find((s) => s.id === activeSession!.id);
+          if (refreshedActive) {
+            activeSession.executorRefs = refreshedActive.executorRefs || activeSession.executorRefs;
+            activeSession.executorParentId = refreshedActive.executorParentId;
+            activeSession.executorRootId = refreshedActive.executorRootId;
+            activeSession.executorDepth = refreshedActive.executorDepth;
+            activeSession.executorRole = refreshedActive.executorRole || activeSession.executorRole;
+            activeSession.executorTypeName = refreshedActive.executorTypeName || activeSession.executorTypeName;
+            activeSession.executorStatus = refreshedActive.executorStatus ?? activeSession.executorStatus;
+            activeSession.treeTokenUsage = refreshedActive.treeTokenUsage;
+            activeSession.swarmSummary = refreshedActive.swarmSummary ?? activeSession.swarmSummary;
+          }
+        }
+      }
 
-      this.setupSessionWatcher(activeSession.id, activeSession.path);
+      this.allSessionsCache = sessions;
+      this.lastActiveSessionModTime = (activeSession.lastModified || activeSession.createdAt).getTime();
+      this.lastActiveSessionMsgCount = activeSession.userPromptCount || activeSession.messageCount || 0;
+      this.lastActiveSessionStepCount = activeMessages.length;
+
+      const execRootId = activeSession.executorRootId || activeSession.id;
+      const execRootSession = sessions.find((s) => s.id === execRootId) || activeSession;
+      const execTreeSessions = [execRootSession, ...ExecutorLayoutHelper.collectExecutorDescendants(execRootSession, sessions)];
+      const swarmData: SwarmSessionData | null = execRootSession.path
+        ? await scanner.loadSwarmData(execRootSession.path)
+        : null;
+      if (this.isDisposed || currentSequenceId !== this.activeReaderSequenceId) {
+        return;
+      }
+
+      this.setupSessionWatcher(activeSession.id, activeSession.path, execTreeSessions);
+
+      const sidebarSig = `${sessions.length}|${execTreeSessions
+        .map((s) => `${s.id}:${s.stepCount ?? s.messageCount}:${s.executorStatus || ''}:${s.latestAction || ''}:${(s.executorRefs || []).length}:${s.treeTokenUsage?.cumulativeTokens || 0}:${s.tokenUsage?.cumulativeTokens || 0}`)
+        .join(';')}`;
+      const shouldPushSidebarUpdate = isLiveUpdate && sidebarSig !== this.lastLiveSidebarSignature;
+      this.lastLiveSidebarSignature = sidebarSig;
+      if (shouldPushSidebarUpdate) {
+        await this.safePostMessage({
+          command: 'updateSessionList',
+          sessionListHtml: this.generateSessionListHtml(sessions, sessionId),
+          totalSessions: sessions.length
+        });
+      }
 
       const cfg = vscode.workspace.getConfiguration('brainHub');
       const messageOrder = cfg.get<'newestFirst' | 'oldestFirst'>('messageOrder', 'newestFirst');
 
       const configState = this.getAppConfigState();
 
-      const chatHtml = this.generateReaderHtml(activeSession, activeMessages, threadSessions, configState, false);
+      const chatHtml = this.generateReaderHtml(
+        activeSession,
+        activeMessages,
+        threadSessions,
+        configState,
+        false,
+        sessions,
+        swarmData
+      );
+      const tokenThresholds = TokenUsageMonitor.getThresholdsFromSettings();
+      const tokenPricing = TokenUsageMonitor.getPricingFromSettings();
+      const bannerTreeRollup = !activeSession.executorParentId ? execRootSession.treeTokenUsage : undefined;
+      const tokenBannerHtml = TokenUsageMonitor.renderReaderTokenBannerHtml(
+        activeSession.tokenUsage,
+        tokenThresholds,
+        tokenPricing,
+        bannerTreeRollup
+      );
+      const sessionPeakBadgeHtml = TokenUsageMonitor.renderSessionTokenBadgeHtml(
+        execRootSession.tokenUsage,
+        tokenThresholds,
+        tokenPricing
+      );
+      // Non-overwrite guard (AC-11): always bind nav-item data-tok-* stats to Coordinator's treeTokenUsage
+      const navTokenSummary =
+        execRootSession.treeTokenUsage && execRootSession.treeTokenUsage.executorCount > 1
+          ? {
+              totalInputTokens: execRootSession.treeTokenUsage.totalInputTokens,
+              totalCacheReadTokens: execRootSession.treeTokenUsage.totalCacheReadTokens,
+              totalOutputTokens: execRootSession.treeTokenUsage.totalOutputTokens,
+              modelBreakdown: execRootSession.treeTokenUsage.modelBreakdown,
+              primaryModel: execRootSession.tokenUsage?.primaryModel
+            }
+          : execRootSession.tokenUsage;
+      const navCost = TokenUsageMonitor.calculateTokenCost(navTokenSummary, tokenPricing);
+      const tokenStats = {
+        inTok: SessionScanner.coerceNonNegativeInt(navTokenSummary?.totalInputTokens),
+        cacheTok: SessionScanner.coerceNonNegativeInt(navTokenSummary?.totalCacheReadTokens),
+        outTok: SessionScanner.coerceNonNegativeInt(navTokenSummary?.totalOutputTokens),
+        cost: navCost.totalCost,
+        inCost: navCost.inputCost,
+        cacheCost: navCost.cachedCost,
+        outCost: navCost.outputCost,
+        saved: navCost.cacheSavings
+      };
+
+      if (isLiveUpdate) {
+        TokenUsageMonitor.getInstance().scheduleRefresh(30);
+      }
 
       const resolvedScrollEdge =
         typeof forceScrollEdge === 'boolean'
           ? (forceScrollEdge ? (messageOrder === 'newestFirst' ? 'top' : 'bottom') : undefined)
           : forceScrollEdge;
 
-      await this.panel.webview.postMessage({
+      await this.safePostMessage({
         command: 'updateReader',
         sessionId: sessionId,
+        navSessionId: execRootSession.id,
         chatHtml: chatHtml,
+        tokenBannerHtml: tokenBannerHtml,
+        sessionPeakBadgeHtml: sessionPeakBadgeHtml,
+        tokenStats: tokenStats,
         isLiveUpdate: isLiveUpdate,
         messageOrder: messageOrder,
         forceScrollEdge: resolvedScrollEdge
       });
     } catch (err) {
-      console.error('Error in updateReaderOnly, falling back to full update:', err);
-      await this.updateContent(false);
+      if (!this.isDisposed) {
+        console.error('Error in updateReaderOnly, falling back to full update:', err);
+        await this.updateContent(false);
+      }
     }
   }
 
@@ -957,6 +1362,9 @@ export class DashboardWebviewPanel {
   }
 
   public async updateContent(forceRefresh: boolean = false): Promise<void> {
+    if (this.isDisposed) {
+      return;
+    }
     try {
       const scanner = SessionScanner.getInstance();
 
@@ -968,18 +1376,37 @@ export class DashboardWebviewPanel {
         sessions = await scanner.scanSessions(forceRefresh);
       }
 
-      if (!this.selectedSessionId && sessions.length > 0) {
-        this.selectedSessionId = sessions[0].id;
+      if (this.isDisposed) {
+        return;
+      }
+
+      const hadValidSelectedSession = Boolean(
+        this.selectedSessionId && sessions.some((s) => s.id === this.selectedSessionId)
+      );
+      if ((!this.selectedSessionId || !hadValidSelectedSession) && sessions.length > 0) {
+        const lastSavedId = DashboardWebviewPanel.globalContext?.workspaceState.get<string>(
+          DashboardWebviewPanel.LAST_SESSION_STATE_KEY
+        );
+        if (this.selectedSessionId && lastSavedId === this.selectedSessionId) {
+          DashboardWebviewPanel.globalContext?.workspaceState.update(
+            DashboardWebviewPanel.LAST_SESSION_STATE_KEY,
+            undefined
+          );
+        }
+        this.selectedSessionId = DashboardWebviewPanel.resolveInitialSessionId(sessions);
       }
 
       // If the dashboard DOM is already initialized, update dynamically without destroying webview DOM!
       if (this.isHtmlInitialized) {
         // Trigger background git status check lazily so it never competes with initial paint
         setTimeout(() => {
+          if (this.isDisposed) {
+            return;
+          }
           const gitSync = GitSyncService.getInstance();
           gitSync.getStatus().then((gitStatus) => {
-            if (gitStatus.remoteUrl && this.panel) {
-              this.panel.webview.postMessage({
+            if (gitStatus.remoteUrl && !this.isDisposed) {
+              this.safePostMessage({
                 command: 'updateGitRemoteUrl',
                 remoteUrl: gitStatus.remoteUrl
               });
@@ -988,20 +1415,21 @@ export class DashboardWebviewPanel {
         }, 3000);
 
         const sessionListHtml = this.generateSessionListHtml(sessions, this.selectedSessionId);
-        await this.panel.webview.postMessage({
+        await this.safePostMessage({
           command: 'updateSessionList',
           sessionListHtml,
-          totalSessions: sessions.length
+          totalSessions: sessions.length,
+          scrollToSelected: !hadValidSelectedSession
         });
 
         if (this.selectedSessionId) {
           const currentSession = sessions.find((s) => s.id === this.selectedSessionId);
           if (currentSession) {
             const currentMod = (currentSession.lastModified || currentSession.createdAt).getTime();
-            const currentCount = currentSession.messageCount || 0;
+            const currentCount = currentSession.userPromptCount || currentSession.messageCount || 0;
 
-            if (forceRefresh || currentMod !== this.lastActiveSessionModTime || currentCount !== this.lastActiveSessionMsgCount) {
-              await this.updateReaderOnly(this.selectedSessionId, !forceRefresh);
+            if (!hadValidSelectedSession || forceRefresh || currentMod !== this.lastActiveSessionModTime || currentCount !== this.lastActiveSessionMsgCount) {
+              await this.updateReaderOnly(this.selectedSessionId, !forceRefresh && hadValidSelectedSession);
             }
           }
         }
@@ -1015,6 +1443,9 @@ export class DashboardWebviewPanel {
       if (this.selectedSessionId) {
         if (this.isShowingCombinedThread) {
           const threadData = await scanner.loadFullThread(this.selectedSessionId);
+          if (this.isDisposed) {
+            return;
+          }
           if (threadData) {
             activeSession = sessions.find((s) => s.id === this.selectedSessionId);
             activeMessages = threadData.allMessages;
@@ -1022,12 +1453,18 @@ export class DashboardWebviewPanel {
           }
         } else {
           const sessionData = await scanner.loadFullSession(this.selectedSessionId);
+          if (this.isDisposed) {
+            return;
+          }
           if (sessionData) {
             activeSession = sessionData.session;
             activeMessages = sessionData.messages;
             const targetInList = sessions.find((s) => s.id === this.selectedSessionId);
             if (targetInList) {
-              targetInList.messageCount = sessionData.session.userPromptCount || sessionData.messages.filter(m => m.type === 'USER_INPUT').length;
+              targetInList.messageCount =
+                sessionData.session.userPromptCount ||
+                sessionData.messages.filter((m) => m.type === 'USER_INPUT').length ||
+                sessionData.messages.length;
               activeSession.rootId = targetInList.rootId || activeSession.rootId || activeSession.id;
               activeSession.childIds = targetInList.childIds || activeSession.childIds || [];
               activeSession.parentId = activeSession.parentId || targetInList.parentId;
@@ -1040,16 +1477,30 @@ export class DashboardWebviewPanel {
         }
       }
 
-      if (activeSession) {
-        this.setupSessionWatcher(activeSession.id, activeSession.path);
-        this.lastActiveSessionModTime = (activeSession.lastModified || activeSession.createdAt).getTime();
-        this.lastActiveSessionMsgCount = activeSession.messageCount || 0;
+      if (this.isDisposed) {
+        return;
       }
+
+      let swarmData: SwarmSessionData | null = null;
+      if (activeSession) {
+        const execRootId = activeSession.executorRootId || activeSession.id;
+        const execRootSession = sessions.find((s) => s.id === execRootId) || activeSession;
+        const execTreeSessions = [execRootSession, ...ExecutorLayoutHelper.collectExecutorDescendants(execRootSession, sessions)];
+        if (execRootSession.path) {
+          swarmData = await scanner.loadSwarmData(execRootSession.path);
+        }
+        this.setupSessionWatcher(activeSession.id, activeSession.path, execTreeSessions);
+        this.lastActiveSessionModTime = (activeSession.lastModified || activeSession.createdAt).getTime();
+        this.lastActiveSessionMsgCount = activeSession.userPromptCount || activeSession.messageCount || 0;
+        this.lastActiveSessionStepCount = activeMessages.length;
+      }
+
+      this.allSessionsCache = sessions;
 
       const gitSync = GitSyncService.getInstance();
       gitSync.getStatus().then((gitStatus) => {
-        if (gitStatus.remoteUrl && this.panel) {
-          this.panel.webview.postMessage({
+        if (gitStatus.remoteUrl && !this.isDisposed) {
+          this.safePostMessage({
             command: 'updateGitRemoteUrl',
             remoteUrl: gitStatus.remoteUrl
           });
@@ -1058,14 +1509,17 @@ export class DashboardWebviewPanel {
 
       const configState = this.getAppConfigState();
 
-      this.panel.webview.html = this.generateDashboardHtml(sessions, activeSession, activeMessages, threadSessions, configState, false);
+      this.panel.webview.html = this.generateDashboardHtml(sessions, activeSession, activeMessages, threadSessions, configState, false, swarmData);
       this.isHtmlInitialized = true;
     } catch (err) {
-      console.error('Error in DashboardWebviewPanel.updateContent:', err);
+      if (!this.isDisposed) {
+        console.error('Error in DashboardWebviewPanel.updateContent:', err);
+      }
     }
   }
 
   public dispose(): void {
+    this.isDisposed = true;
     this.disposeSessionWatcher();
     DashboardWebviewPanel.currentPanel = undefined;
     this.panel.dispose();
@@ -1130,7 +1584,17 @@ export class DashboardWebviewPanel {
     };
 
     for (const msg of messages) {
-      const isSystemEvent = msg.type === 'SYSTEM_MESSAGE' || msg.source === 'SYSTEM';
+      const isSystemEvent =
+        msg.type === 'CHECKPOINT' ||
+        msg.type === 'SUBAGENT_NOTIFICATION' ||
+        msg.type === 'SYSTEM_SDK' ||
+        (msg.type === 'SYSTEM_MESSAGE' &&
+          msg.interAgentMeta?.kind !== 'task_assignment' &&
+          msg.interAgentMeta?.kind !== 'executor_report') ||
+        (msg.source === 'SYSTEM' &&
+          msg.type !== 'INVOKE_SUBAGENT' &&
+          msg.interAgentMeta?.kind !== 'task_assignment' &&
+          msg.interAgentMeta?.kind !== 'executor_report');
 
       const textContent = (msg.cleanContent !== undefined ? msg.cleanContent : msg.content) || '';
       const isShortTransient =
@@ -1161,7 +1625,7 @@ export class DashboardWebviewPanel {
     return items;
   }
 
-  private renderSessionNavItemHtml(s: ChatSession, isSelected: boolean): string {
+  private renderSessionNavItemHtml(s: ChatSession, isSelected: boolean, allSessions?: ChatSession[], targetSelectedId?: string): string {
     const timeTagStr = DashboardWebviewPanel.formatDateTimeRange(s.createdAt, s.lastModified, false);
 
     const isThread = Boolean((s.childIds && s.childIds.length > 0) || s.parentId);
@@ -1172,36 +1636,77 @@ export class DashboardWebviewPanel {
     const artifactTag = (s.hasArtifacts || totalArtifacts > 0)
       ? `<span class="info-tag type-artifact" title="${totalArtifacts} Session Artifact(s) Available">📦 ${totalArtifacts > 0 ? totalArtifacts : 'Artifacts'}</span>`
       : '';
-    const typeBadge = `${threadTag}${artifactTag}`;
+    const sessionsRef = Array.isArray(allSessions) ? allSessions : (this.allSessionsCache || []);
+    const execBadge = ExecutorLayoutHelper.buildExecutorTreeSummaryBadge(s, sessionsRef).badgeHtml;
+    const typeBadge = `${threadTag}${artifactTag}${execBadge}`;
 
     const wsTag = s.workspaceName ? `<span class="info-tag ws" title="Project Folder: ${s.workspacePath || s.workspaceName}">📁 ${MarkdownRenderer.escapeHtml(s.workspaceName)}</span>` : '';
     const pcTag = s.machineName ? `<span class="info-tag pc" title="Computer: ${s.machineName}">💻 ${MarkdownRenderer.escapeHtml(s.machineName)}</span>` : '';
+    const pricingCfg = TokenUsageMonitor.getPricingFromSettings();
+    const tokenTag = TokenUsageMonitor.renderSessionTokenBadgeHtml(s.tokenUsage, TokenUsageMonitor.getThresholdsFromSettings(), pricingCfg);
+    const rollupSummary =
+      !s.executorParentId && s.treeTokenUsage && s.treeTokenUsage.executorCount > 1
+        ? {
+            totalInputTokens: s.treeTokenUsage.totalInputTokens,
+            totalCacheReadTokens: s.treeTokenUsage.totalCacheReadTokens,
+            totalOutputTokens: s.treeTokenUsage.totalOutputTokens,
+            modelBreakdown: s.treeTokenUsage.modelBreakdown,
+            primaryModel: s.tokenUsage?.primaryModel
+          }
+        : s.tokenUsage;
+    const sCost = TokenUsageMonitor.calculateTokenCost(rollupSummary, pricingCfg);
+    const tokIn = SessionScanner.coerceNonNegativeInt(rollupSummary?.totalInputTokens);
+    const tokCache = SessionScanner.coerceNonNegativeInt(rollupSummary?.totalCacheReadTokens);
+    const tokOut = SessionScanner.coerceNonNegativeInt(rollupSummary?.totalOutputTokens);
 
-    const promptText = (s.allPrompts && s.allPrompts.length > 0) ? s.allPrompts.join(' ') : s.firstPrompt;
+    const promptText = ((s.allPrompts && s.allPrompts.length > 0) ? s.allPrompts.join(' ') : s.firstPrompt) || '';
     const searchKeywords = s.searchKeywords || '';
     const rawSearchText = `${s.id} ${s.title} ${promptText} ${searchKeywords} ${s.workspaceName || ''} ${s.machineName || ''}`.toLowerCase();
+    const descendants = ExecutorLayoutHelper.collectExecutorDescendants(s, sessionsRef);
+    const descendantText = descendants
+      .map((d) => `${d.id} ${d.title} ${d.executorRole || ''} ${d.executorTypeName || ''} ${d.searchKeywords || ''} ${(d.allPrompts || []).join(' ')} ${d.firstPrompt || ''}`)
+      .join(' ')
+      .toLowerCase();
+    const descendantIds = descendants.map((d) => d.id).join(',');
 
-    const isEmptySession = s.isEmpty || (s.messageCount === 0 && !s.hasArtifacts);
+    const isEmptySession = s.isEmpty || ((s.messageCount ?? 0) === 0 && !s.hasArtifacts);
     const wsNameLower = (s.workspaceName || '').toLowerCase();
-    const wsPathLower = (s.workspacePath || '').toLowerCase();
+    const wsPathLower = SessionScanner.normalizeWorkspacePath(s.workspacePath || '');
+    const machineLower = (s.machineName || '').trim().toLowerCase();
+    const subTreeHtml = ExecutorLayoutHelper.renderNavSubTreeHtml(s, sessionsRef, targetSelectedId);
 
     return `
-      <div class="session-nav-item ${isSelected ? 'selected' : ''}"
-           onclick="selectSession('${s.id}')"
-           data-id="${s.id}"
-           data-text="${MarkdownRenderer.escapeHtml(rawSearchText)}"
-           data-ws-name="${MarkdownRenderer.escapeHtml(wsNameLower)}"
-           data-ws-path="${MarkdownRenderer.escapeHtml(wsPathLower)}"
-           data-empty="${isEmptySession ? 'true' : 'false'}"
-           title="Click to view conversation details">
-        <div class="session-nav-title">${MarkdownRenderer.escapeHtml(s.title)}</div>
-        <div class="session-nav-info-line">
-          ${typeBadge}
-          <span class="info-tag time" title="Created Time ➔ Last Message Time">${timeTagStr}</span>
-          <span class="info-tag count" title="User Chat Messages Count">💬${s.messageCount}</span>
-          ${wsTag}
-          ${pcTag}
+      <div class="session-tree-node">
+        <div class="session-nav-item ${isSelected ? 'selected' : ''}"
+             onclick="selectSession('${s.id}')"
+             data-id="${s.id}"
+             data-text="${MarkdownRenderer.escapeHtml(rawSearchText)}"
+             data-descendant-text="${MarkdownRenderer.escapeHtml(descendantText)}"
+             data-descendant-ids="${MarkdownRenderer.escapeHtml(descendantIds)}"
+             data-ws-name="${MarkdownRenderer.escapeHtml(wsNameLower)}"
+             data-ws-path="${MarkdownRenderer.escapeHtml(wsPathLower)}"
+             data-machine="${MarkdownRenderer.escapeHtml(machineLower)}"
+             data-empty="${isEmptySession ? 'true' : 'false'}"
+             data-tok-in="${tokIn}"
+             data-tok-cache="${tokCache}"
+             data-tok-out="${tokOut}"
+             data-tok-cost="${sCost.totalCost.toFixed(8)}"
+             data-tok-in-cost="${sCost.inputCost.toFixed(8)}"
+             data-tok-cache-cost="${sCost.cachedCost.toFixed(8)}"
+             data-tok-out-cost="${sCost.outputCost.toFixed(8)}"
+             data-tok-saved="${sCost.cacheSavings.toFixed(8)}"
+             title="Click to view conversation details">
+          <div class="session-nav-title">${MarkdownRenderer.escapeHtml(s.title)}</div>
+          <div class="session-nav-info-line">
+            ${typeBadge}
+            <span class="info-tag time" title="Created Time ➔ Last Message Time">${timeTagStr}</span>
+            <span class="info-tag count" title="User Chat Messages Count">💬${s.messageCount ?? 0}</span>
+            ${tokenTag}
+            ${wsTag}
+            ${pcTag}
+          </div>
         </div>
+        ${subTreeHtml}
       </div>
     `;
   }
@@ -1212,6 +1717,8 @@ export class DashboardWebviewPanel {
     }
 
     const targetSelectedId = selectedSessionId || this.selectedSessionId;
+    const topLevelSessions = allSessions.filter((s) => !s.executorParentId);
+    const rootSessions = topLevelSessions.length > 0 ? topLevelSessions : allSessions;
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
@@ -1232,7 +1739,7 @@ export class DashboardWebviewPanel {
     const sortBy = cfg.get<string>('sessionSortBy', 'lastModified');
     const expansionMode = cfg.get<string>('defaultGroupExpansion', 'smart');
 
-    for (const session of allSessions) {
+    for (const session of rootSessions) {
       const time = (sortBy === 'createdAt'
         ? (session.createdAt || session.lastModified)
         : (session.lastModified || session.createdAt || new Date(0))).getTime();
@@ -1256,7 +1763,13 @@ export class DashboardWebviewPanel {
 
     return activeGroups
       .map((g) => {
-        const containsSelected = targetSelectedId ? g.sessions.some((s) => s.id === targetSelectedId) : false;
+        const containsSelected = targetSelectedId
+          ? g.sessions.some(
+              (s) =>
+                s.id === targetSelectedId ||
+                ExecutorLayoutHelper.collectExecutorDescendants(s, allSessions).some((d) => d.id === targetSelectedId)
+            )
+          : false;
         let isOpen = false;
         if (containsSelected) {
           isOpen = true;
@@ -1275,8 +1788,9 @@ export class DashboardWebviewPanel {
           }
         }
 
+        const renderNavFn = this.renderSessionNavItemHtml || DashboardWebviewPanel.prototype.renderSessionNavItemHtml;
         const itemsHtml = g.sessions
-          .map((s) => this.renderSessionNavItemHtml(s, s.id === targetSelectedId))
+          .map((s) => renderNavFn.call(this, s, s.id === targetSelectedId, allSessions, targetSelectedId))
           .join('\n');
 
         return `
@@ -1604,11 +2118,12 @@ export class DashboardWebviewPanel {
     messages: ChatMessage[] = [],
     threadSessions: ChatSession[] = [],
     configState?: AppConfigState,
-    isLoadingPlaceholder: boolean = false
+    isLoadingPlaceholder: boolean = false,
+    swarmData?: SwarmSessionData | null
   ): string {
     const sessionListHtml = this.generateSessionListHtml(allSessions, this.selectedSessionId);
 
-    const chatViewHtml = this.generateReaderHtml(activeSession, messages, threadSessions, configState, isLoadingPlaceholder);
+    const chatViewHtml = this.generateReaderHtml(activeSession, messages, threadSessions, configState, isLoadingPlaceholder, allSessions, swarmData);
 
     const cfg = configState || {
       machineName: '',
@@ -1623,7 +2138,8 @@ export class DashboardWebviewPanel {
       messageOrder: 'newestFirst',
       sessionSortBy: 'lastModified',
       defaultToolsState: 'collapsed',
-      defaultAiStepsState: 'collapsed'
+      defaultAiStepsState: 'collapsed',
+      defaultHeaderState: 'expanded'
     };
 
     const isToolsExpanded = cfg.defaultToolsState === 'expanded';
@@ -1631,7 +2147,7 @@ export class DashboardWebviewPanel {
     const isSidebarCollapsed = DashboardWebviewPanel.globalContext?.globalState.get<boolean>('dashboardSidebarCollapsed', false) || false;
 
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
-    const currentWorkspacePaths = workspaceFolders.map((f) => f.uri.fsPath.toLowerCase());
+    const currentWorkspacePaths = workspaceFolders.map((f) => SessionScanner.normalizeWorkspacePath(f.uri.fsPath)).filter(Boolean);
     const currentWorkspaceNames = workspaceFolders.map((f) => f.name.toLowerCase());
     const activeWsDisplayName = workspaceFolders.length > 0 ? workspaceFolders.map((f) => f.name).join(', ') : '';
 
@@ -1642,6 +2158,23 @@ export class DashboardWebviewPanel {
     const wsFilterTooltip = activeWsDisplayName
       ? `Filter chat history by current workspace (${activeWsDisplayName})`
       : 'Filter chat history by current workspace';
+
+    const initialRollupSessions = allSessions.filter((s) => {
+      if (isHideEmpty && (s.isEmpty || ((s.messageCount ?? 0) === 0 && !s.hasArtifacts))) {
+        return false;
+      }
+      if (isWsFiltered && workspaceFolders.length > 0) {
+        return workspaceFolders.some((f) => SessionScanner.matchSessionToWorkspaceFolder(s, f.uri.fsPath, f.name) !== null);
+      }
+      return true;
+    });
+    const initialRollupScope = isWsFiltered
+      ? (activeWsDisplayName ? `📁 ${activeWsDisplayName}` : '📁 Project Rollup')
+      : '🌐 Visible Chats';
+    const initialSidebarRollupHtml = TokenUsageMonitor.renderSidebarRollupHtml(
+      TokenUsageMonitor.aggregateProjectTokenUsage(initialRollupSessions, TokenUsageMonitor.getPricingFromSettings()),
+      initialRollupScope
+    );
 
     if (!DashboardWebviewPanel.cachedVersion) {
       try {
@@ -1696,6 +2229,7 @@ export class DashboardWebviewPanel {
         <link rel="stylesheet" href="${codiconUri}">
         <style>
           ${HIGHLIGHT_CSS}
+          ${TokenUsageMonitor.getTokenTelemetryCss()}
         </style>
         <style>
           :root {
@@ -1842,25 +2376,28 @@ export class DashboardWebviewPanel {
           .dashboard-header {
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
-            padding: 8px 18px;
+            padding: 6px 12px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 10px 16px;
+            gap: 8px;
             flex-shrink: 0;
             z-index: 50;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
+            font-size: var(--vscode-font-size, 13px);
+            min-width: 0;
           }
 
           .header-left-section {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 4px;
             flex-shrink: 0;
           }
 
           .latest-chat-btn {
-            color: var(--accent-cyan, #38bdf8) !important;
+            color: #f97316 !important;
+            padding: 2px 3px !important;
           }
 
           .latest-chat-btn:hover {
@@ -1892,12 +2429,13 @@ export class DashboardWebviewPanel {
           .app-title-text {
             display: inline-flex;
             align-items: center;
-            gap: 7px;
-            font-size: 14px;
+            gap: 6px;
+            font-size: var(--vscode-font-size, 13px);
             font-weight: 700;
             color: var(--text-primary);
             letter-spacing: -0.2px;
             white-space: nowrap;
+            margin-left: 0;
           }
 
           .app-title-icon {
@@ -1944,8 +2482,12 @@ export class DashboardWebviewPanel {
           .dashboard-top-actions {
             display: flex;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 6px;
+            flex-wrap: nowrap;
+            gap: 2px;
+            min-width: 0;
+            flex: 1 1 auto;
+            justify-content: flex-end;
+            overflow: hidden;
           }
 
           .dashboard-body {
@@ -2360,7 +2902,7 @@ export class DashboardWebviewPanel {
           .reader-header {
             background: var(--bg-primary);
             border-bottom: 1px solid var(--border-color);
-            padding: 12px 24px;
+            padding: 8px 12px;
             position: sticky;
             top: 0;
             z-index: 50;
@@ -2370,14 +2912,14 @@ export class DashboardWebviewPanel {
           }
 
           .reader-header.scrolled {
-            padding: 8px 24px;
+            padding: 6px 12px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
           }
 
           .reader-header-column {
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 4px;
             width: 100%;
           }
 
@@ -2408,14 +2950,14 @@ export class DashboardWebviewPanel {
             display: flex;
             align-items: center;
             flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 2px;
+            gap: 2px;
+            margin-top: 0;
           }
 
           .transcript-search-wrapper {
             position: relative;
-            flex: 1 1 160px;
-            min-width: 160px;
+            flex: 1 1 110px;
+            min-width: 110px;
             max-width: 100%;
           }
 
@@ -2424,9 +2966,9 @@ export class DashboardWebviewPanel {
             background: var(--input-bg);
             border: 1px solid var(--border-color);
             color: var(--input-fg);
-            padding: 4px 75px 4px 26px;
+            padding: 3px 64px 3px 24px;
             border-radius: var(--radius-md);
-            font-size: 12px;
+            font-size: var(--vscode-font-size, 13px);
             outline: none;
           }
 
@@ -3277,17 +3819,23 @@ export class DashboardWebviewPanel {
           .table-container {
             width: 100%;
             overflow-x: auto;
-            margin: 12px 0;
+            margin: 14px 0;
             border-radius: var(--radius-md);
             border: 1px solid var(--border-color);
+          }
+
+          .table-container > table,
+          .table-container > .markdown-table {
+            margin: 0 !important;
           }
 
           .message-bubble table,
           .markdown-table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: auto;
             font-size: 13px;
-            line-height: 2.1;
+            line-height: 1.55;
             margin: 14px 0;
           }
 
@@ -3296,9 +3844,12 @@ export class DashboardWebviewPanel {
           .markdown-table th,
           .markdown-table td {
             border: 1px solid var(--border-color);
-            padding: 12px 16px;
+            padding: 8px 12px;
             text-align: left;
-            vertical-align: middle;
+            vertical-align: top;
+            word-break: normal !important;
+            overflow-wrap: normal !important;
+            hyphens: none;
           }
 
           .message-bubble th,
@@ -3613,7 +4164,7 @@ export class DashboardWebviewPanel {
             width: 100%;
           }
 
-          details.autonomous-group-details summary {
+          details.autonomous-group-details > summary {
             padding: 8px 12px;
             font-size: 12px;
             font-weight: 600;
@@ -3626,8 +4177,14 @@ export class DashboardWebviewPanel {
             user-select: none;
           }
 
-          details.autonomous-group-details[open] summary {
+          details.autonomous-group-details[open] > summary {
             border-bottom: 1px solid var(--border-color);
+          }
+
+          .markdown-summary-block {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed var(--border-color);
           }
 
           .autonomous-group-body {
@@ -3661,7 +4218,7 @@ export class DashboardWebviewPanel {
             width: 100%;
           }
 
-          details.internal-step-details summary {
+          details.internal-step-details > summary {
             padding: 6px 10px;
             font-size: 11.5px;
             font-weight: 600;
@@ -3673,7 +4230,7 @@ export class DashboardWebviewPanel {
             background: var(--bg-tertiary);
           }
 
-          details.internal-step-details[open] summary {
+          details.internal-step-details[open] > summary {
             border-bottom: 1px solid var(--border-color);
           }
 
@@ -3700,7 +4257,7 @@ export class DashboardWebviewPanel {
             width: 100%;
             overflow: hidden;
           }
-          details.chat-details summary {
+          details.chat-details > summary {
             background: var(--bg-secondary);
             padding: 6px 10px;
             cursor: pointer;
@@ -3712,7 +4269,7 @@ export class DashboardWebviewPanel {
             user-select: none;
             transition: background 0.15s;
           }
-          details.chat-details summary:hover {
+          details.chat-details > summary:hover {
             background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
           }
           .details-inner-content {
@@ -3919,33 +4476,25 @@ export class DashboardWebviewPanel {
             align-items: center;
             justify-content: space-between;
           }
+          ${HeaderLayoutHelper.getSharedHeaderCss()}
+          ${ExecutorLayoutHelper.getSharedExecutorCss()}
+          .session-tree-node:has(.session-nav-item.hidden):not(:has(.executor-subnav-item.selected)) .executor-subtree-details { display: none; }
         </style>
       </head>
       <body data-workspace-path="${MarkdownRenderer.escapeHtml(activeSession?.workspacePath || '')}">
         <header class="dashboard-header">
           <div class="header-left-section">
             <button class="action-btn icon-only ${isSidebarCollapsed ? 'active' : ''}" onclick="toggleSidebar()" id="sidebarToggleBtn" title="Toggle Sidebar (Collapse / Expand Left Panel)">
-              <i class="codicon codicon-layout-sidebar-left"></i>
+              <i class="codicon ${isSidebarCollapsed ? 'codicon-layout-sidebar-left-off' : 'codicon-layout-sidebar-left'}"></i>
             </button>
             <button class="action-btn icon-only latest-chat-btn" onclick="loadLatestChat()" id="btnLoadLatestChat" title="Jump to Latest Chat">
-              <span class="lightning-icon">⚡</span>
+              <svg class="lightning-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M9.58 1.077a.75.75 0 0 1 .405.82L9.165 6h4.085a.75.75 0 0 1 .567 1.242l-6.5 7.5a.75.75 0 0 1-1.302-.639L6.835 10H2.75a.75.75 0 0 1-.567-1.242l6.5-7.5a.75.75 0 0 1 .897-.181Z"/></svg>
             </button>
             <div class="app-branding">
-              <span class="app-title-text">
-                <svg class="app-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="10" r="1.5" fill="currentColor"/>
-                  <circle cx="8" cy="10" r="1.5" fill="currentColor"/>
-                  <circle cx="16" cy="10" r="1.5" fill="currentColor"/>
-                  <path d="M12 3v3" stroke-dasharray="1 1"/>
-                </svg>
-                Brain Hub for Antigravity
-              </span>
-              <span class="app-version-text" title="Installed Extension Version">v${extensionVersion}</span>
-              <span class="branding-badge" title="Total conversation sessions loaded: ${allSessions.length}">💬 ${allSessions.length}</span>
+              <span class="app-title-text" id="appTitleText" data-version="${MarkdownRenderer.escapeHtml(extensionVersion)}" title="Brain Hub for Antigravity v${MarkdownRenderer.escapeHtml(extensionVersion)} (${allSessions.length} sessions)">Brain Hub for Antigravity</span>
             </div>
           </div>
-          <div class="dashboard-top-actions">
+          <div class="dashboard-top-actions" id="dashboardTopActions">
             <button class="action-btn primary icon-only" id="topSyncGitBtn" onclick="syncGit()" title="${syncBtnTitle}">
               <i class="codicon codicon-github"></i>
             </button>
@@ -3961,6 +4510,7 @@ export class DashboardWebviewPanel {
             <button class="action-btn icon-only" onclick="cleanEmptyChats()" title="Scan and clean up all empty chat session directories (0 messages)">
               <span style="font-size:13px;line-height:1;">🧹</span>
             </button>
+            <button class="action-btn naked-btn overflow-more-btn" id="dashboardTopActionsOverflowBtn" onclick="toggleOverflowMenu('dashboardTopActions', 'dashboardTopActionsOverflowBtn', event)" title="More actions" style="display:none;">${HeaderLayoutHelper.renderOverflowEllipsisSvg()}</button>
           </div>
         </header>
 
@@ -3983,6 +4533,7 @@ export class DashboardWebviewPanel {
                   </button>
                 </div>
               </div>
+              ${initialSidebarRollupHtml}
             </div>
             <div class="session-nav-list" id="sessionList">
               ${sessionListHtml}
@@ -4073,6 +4624,15 @@ export class DashboardWebviewPanel {
                   <option value="expanded" ${cfg.defaultAiStepsState === 'expanded' ? 'selected' : ''}>⚡ Expanded</option>
                 </select>
                 <span class="hint">Default expand/collapse state for autonomous AI step groups.</span>
+              </div>
+
+              <div class="config-group">
+                <label>📐 Default Header State (defaultHeaderState)</label>
+                <select id="cfgDefaultHeaderState" class="config-input">
+                  <option value="expanded" ${cfg.defaultHeaderState !== 'collapsed' ? 'selected' : ''}>Expanded (Pills, Toolbar & Full Token Bar)</option>
+                  <option value="collapsed" ${cfg.defaultHeaderState === 'collapsed' ? 'selected' : ''}>Collapsed (Compact 1-Line Summary)</option>
+                </select>
+                <span class="hint">Default expand/collapse state for the reader metadata, toolbar, and token strip.</span>
               </div>
 
               <div class="config-group">
@@ -4211,19 +4771,46 @@ export class DashboardWebviewPanel {
           let isHideEmptyActive = ${isHideEmpty ? 'true' : 'false'};
           const currentWorkspacePaths = ${JSON.stringify(currentWorkspacePaths)};
           const currentWorkspaceNames = ${JSON.stringify(currentWorkspaceNames)};
+          const currentLocalMachine = ${JSON.stringify(SessionScanner.getInstance().getLocalMachineName().trim().toLowerCase())};
           let currentLoadedSessionId = '${MarkdownRenderer.escapeHtml(activeSession?.id || '')}';
+
+          function getWorkspaceRootFormat(p) {
+            const driveMatch = p.match(/^([a-z]):\\//i);
+            if (driveMatch) return 'win:' + driveMatch[1].toLowerCase();
+            const posixRootMatch = p.match(/^\\/(users|home|workspaces|mnt|opt|srv|var\\/www)(?:\\/|$)/i);
+            if (posixRootMatch) return 'posix:/' + posixRootMatch[1].toLowerCase();
+            return p.startsWith('/') ? 'posix:/' : '';
+          }
+
+          function isCrossMachineOrOsPath(sPath, wPath, sMachine) {
+            if (sMachine && currentLocalMachine && sMachine !== currentLocalMachine) return true;
+            const sRoot = getWorkspaceRootFormat(sPath);
+            const wRoot = getWorkspaceRootFormat(wPath);
+            if (sRoot && wRoot && sRoot !== wRoot) return true;
+            const sUserMatch = sPath.match(/^(?:[a-z]:\\/users|\\/users|\\/home)\\/([^\\/]+)\\//i);
+            const wUserMatch = wPath.match(/^(?:[a-z]:\\/users|\\/users|\\/home)\\/([^\\/]+)\\//i);
+            if (sUserMatch && wUserMatch && sUserMatch[1].toLowerCase() !== wUserMatch[1].toLowerCase()) return true;
+            return false;
+          }
 
           function matchesWorkspaceFilter(item) {
             if (!isWorkspaceFilterActive || currentWorkspacePaths.length === 0) return true;
-            const itemWsPath = item.getAttribute('data-ws-path') || '';
-            const itemWsName = item.getAttribute('data-ws-name') || '';
+            const itemWsPath = (item.getAttribute('data-ws-path') || '').trim().toLowerCase();
+            const itemWsName = (item.getAttribute('data-ws-name') || '').trim().toLowerCase();
+            const itemMachine = (item.getAttribute('data-machine') || '').trim().toLowerCase();
             for (let i = 0; i < currentWorkspacePaths.length; i++) {
               const cPath = currentWorkspacePaths[i];
-              if (itemWsPath && (itemWsPath.includes(cPath) || cPath.includes(itemWsPath))) return true;
+              if (itemWsPath && cPath && (itemWsPath === cPath || itemWsPath.startsWith(cPath + '/') || cPath.startsWith(itemWsPath + '/'))) {
+                return true;
+              }
             }
             for (let i = 0; i < currentWorkspaceNames.length; i++) {
               const cName = currentWorkspaceNames[i];
-              if (itemWsName && itemWsName === cName) return true;
+              if (itemWsName && cName && itemWsName === cName) {
+                if (!itemWsPath) return true;
+                const cPath = currentWorkspacePaths[i] || '';
+                if (isCrossMachineOrOsPath(itemWsPath, cPath, itemMachine)) return true;
+              }
             }
             return false;
           }
@@ -4450,7 +5037,7 @@ export class DashboardWebviewPanel {
               if (!linkPath) {
                 const href = linkEl.getAttribute('href') || '';
                 if (href.startsWith('javascript:')) {
-                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\(['"]([^'"]+)['"]\)/);
+                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\\(['"]([^'"]+)['"]\\)/);
                   if (m) {
                     try { linkPath = decodeURI(m[1]); } catch { linkPath = m[1]; }
                   }
@@ -4769,12 +5356,12 @@ export class DashboardWebviewPanel {
 
           function previewArtifactDoc(el) {
             const p = el ? el.getAttribute('data-path') : '';
-            if (p) openRichPreview(p);
+            if (p) vscode.postMessage({ command: 'openRichPreview', filePath: p });
           }
 
           function editArtifactDoc(el) {
             const p = el ? el.getAttribute('data-path') : '';
-            if (p) openFile(p);
+            if (p) vscode.postMessage({ command: 'openFile', filePath: p });
           }
 
           function openSessionFolderInOS() {
@@ -4838,6 +5425,8 @@ export class DashboardWebviewPanel {
           }
 
           function toggleThreadMode() { vscode.postMessage({ command: 'toggleThreadMode' }); }
+          function toggleExecutorTab(tab) { vscode.postMessage({ command: 'toggleExecutorTab', tab: tab }); }
+          window.toggleExecutorTab = toggleExecutorTab;
           function copyResumePrompt() { vscode.postMessage({ command: 'copyResumePrompt' }); }
           function copySessionId() { vscode.postMessage({ command: 'copySessionId' }); }
           function exportMarkdown() { vscode.postMessage({ command: 'exportMarkdown' }); }
@@ -4848,9 +5437,30 @@ export class DashboardWebviewPanel {
           function syncGit() { vscode.postMessage({ command: 'syncGit' }); }
           function refreshDashboard() { vscode.postMessage({ command: 'refresh' }); }
           function reloadCurrentChat() { vscode.postMessage({ command: 'reloadChat' }); }
-          function openFile(encodedPath) { vscode.postMessage({ command: 'openFile', filePath: decodeURI(encodedPath) }); }
-          function openRichPreview(encodedPath) { vscode.postMessage({ command: 'openRichPreview', filePath: decodeURI(encodedPath) }); }
-          function openIdePreview(encodedPath) { vscode.postMessage({ command: 'openIdePreview', filePath: decodeURI(encodedPath) }); }
+          function safeDecodePath(rawOrEncodedPath) {
+            if (!rawOrEncodedPath) return '';
+            try {
+              return decodeURIComponent(rawOrEncodedPath);
+            } catch {
+              try {
+                return decodeURI(rawOrEncodedPath);
+              } catch {
+                return rawOrEncodedPath;
+              }
+            }
+          }
+          function openFile(encodedPath) {
+            const p = safeDecodePath(encodedPath);
+            if (p) vscode.postMessage({ command: 'openFile', filePath: p });
+          }
+          function openRichPreview(encodedPath) {
+            const p = safeDecodePath(encodedPath);
+            if (p) vscode.postMessage({ command: 'openRichPreview', filePath: p });
+          }
+          function openIdePreview(encodedPath) {
+            const p = safeDecodePath(encodedPath);
+            if (p) vscode.postMessage({ command: 'openIdePreview', filePath: p });
+          }
 
           function toggleOrder() {
             vscode.postMessage({ command: 'toggleMessageOrder' });
@@ -4903,6 +5513,7 @@ export class DashboardWebviewPanel {
             const messageOrder = document.getElementById('cfgMessageOrder').value;
             const defaultToolsState = document.getElementById('cfgDefaultToolsState').value;
             const defaultAiStepsState = document.getElementById('cfgDefaultAiStepsState').value;
+            const defaultHeaderState = document.getElementById('cfgDefaultHeaderState') ? document.getElementById('cfgDefaultHeaderState').value : 'expanded';
             const gitRemoteUrl = document.getElementById('cfgGitRemote').value;
             const autoSyncIntervalMinutes = document.getElementById('cfgSyncInterval').value;
             const autoSyncOnStartup = document.getElementById('cfgAutoSyncStartup').checked;
@@ -4919,6 +5530,7 @@ export class DashboardWebviewPanel {
                 messageOrder,
                 defaultToolsState,
                 defaultAiStepsState,
+                defaultHeaderState,
                 gitRemoteUrl,
                 autoSyncIntervalMinutes,
                 autoSyncOnStartup,
@@ -5038,46 +5650,141 @@ export class DashboardWebviewPanel {
             }
           }
 
+          function getDetailsStateKeys(el) {
+            const keys = [];
+            const step = el.getAttribute('data-step');
+            if (step) keys.push('step:' + step);
+            const groupStart = el.getAttribute('data-group-start');
+            if (groupStart) keys.push('group-start:' + groupStart);
+            const detailKey = el.getAttribute('data-detail-key');
+            if (detailKey) keys.push('detail:' + detailKey);
+            const groupRange = el.getAttribute('data-group-range');
+            if (groupRange) keys.push('group-range:' + groupRange);
+            return keys;
+          }
+
+          function syncExpandToggleButtons() {
+            const toolsBtn = document.getElementById('toolsToggleBtn');
+            if (toolsBtn) {
+              toolsBtn.title = 'Tool Call Details: ' + (toolsExpanded ? 'Expanded (Click to collapse)' : 'Collapsed (Click to expand)');
+              toolsBtn.classList.toggle('active', toolsExpanded);
+            }
+            const internalBtn = document.getElementById('internalToggleBtn');
+            if (internalBtn) {
+              internalBtn.title = 'Autonomous AI Execution Steps: ' + (aiStepsExpanded ? 'Expanded (Click to collapse)' : 'Collapsed (Click to expand)');
+              internalBtn.classList.toggle('active', aiStepsExpanded);
+            }
+          }
+
           function applyDashboardReaderUpdate(message, isNewestFirst, forceScrollEdge) {
             const reader = document.getElementById('dashboardReader');
             if (!reader || !message.chatHtml) return;
             const isLive = !!message.isLiveUpdate;
 
-            const isDifferentSession = (currentLoadedSessionId && message.sessionId && currentLoadedSessionId !== message.sessionId);
+            const isDifferentSession = Boolean(currentLoadedSessionId && message.sessionId && currentLoadedSessionId !== message.sessionId);
             currentLoadedSessionId = message.sessionId || currentLoadedSessionId;
 
             const prevScrollTop = reader.scrollTop;
             const prevScrollHeight = reader.scrollHeight;
 
-            const openSteps = new Set();
-            reader.querySelectorAll('details[open]').forEach(el => {
-              const k = el.getAttribute('data-step') || el.getAttribute('data-group-range');
-              if (k) openSteps.add(k);
-            });
+            const existingTokenDrawer = document.getElementById('tokenTelemetryDrawer');
+            const wasTokenDrawerOpen = !!(existingTokenDrawer && existingTokenDrawer.open);
+
+            const openStepKeys = new Set();
+            const closedStepKeys = new Set();
+            if (!isDifferentSession) {
+              reader.querySelectorAll('details').forEach(el => {
+                const keys = getDetailsStateKeys(el);
+                if (keys.length === 0) return;
+                if (el.open) {
+                  keys.forEach(k => openStepKeys.add(k));
+                } else {
+                  keys.forEach(k => closedStepKeys.add(k));
+                }
+              });
+            }
 
             const prevSearchInput = document.getElementById('transcriptSearch');
             const prevSearchQuery = prevSearchInput ? prevSearchInput.value : '';
 
             reader.innerHTML = message.chatHtml;
 
+            if (wasTokenDrawerOpen) {
+              const newTokenDrawer = document.getElementById('tokenTelemetryDrawer');
+              if (newTokenDrawer) newTokenDrawer.open = true;
+            }
+            if (typeof closeOverflowPopover === 'function') {
+              closeOverflowPopover();
+            }
+            if (typeof syncHeaderCollapseUi === 'function') {
+              syncHeaderCollapseUi();
+            }
+
             const newSearchInput = document.getElementById('transcriptSearch');
             if (newSearchInput && prevSearchQuery) {
               newSearchInput.value = prevSearchQuery;
             }
 
-            if (openSteps.size > 0) {
+            if (isDifferentSession) {
+              const newInternalBtn = document.getElementById('internalToggleBtn');
+              aiStepsExpanded = !!(newInternalBtn && newInternalBtn.classList.contains('active'));
+              const newToolsBtn = document.getElementById('toolsToggleBtn');
+              toolsExpanded = !!(newToolsBtn && newToolsBtn.classList.contains('active'));
+            } else {
+              syncExpandToggleButtons();
               reader.querySelectorAll('details').forEach(el => {
-                const k = el.getAttribute('data-step') || el.getAttribute('data-group-range');
-                if (k && openSteps.has(k)) {
+                const keys = getDetailsStateKeys(el);
+                const wasOpen = keys.some(k => openStepKeys.has(k));
+                const wasClosed = keys.some(k => closedStepKeys.has(k));
+
+                if (el.classList.contains('autonomous-group-details') || el.classList.contains('internal-step-details')) {
+                  if (aiStepsExpanded) {
+                    el.open = !(wasClosed && !wasOpen);
+                  } else {
+                    el.open = wasOpen;
+                  }
+                } else if (el.classList.contains('chat-details')) {
+                  if (toolsExpanded) {
+                    el.open = !(wasClosed && !wasOpen);
+                  } else {
+                    el.open = wasOpen;
+                  }
+                } else if (wasOpen) {
                   el.open = true;
                 }
               });
             }
 
+            const navTargetId = message.navSessionId || message.sessionId;
             document.querySelectorAll('.session-nav-item').forEach(el => {
-              if (el.getAttribute('data-id') === message.sessionId) {
-                el.classList.add('selected');
+              if (el.getAttribute('data-id') === navTargetId) {
+                if (navTargetId === message.sessionId) {
+                  el.classList.add('selected');
+                } else {
+                  el.classList.remove('selected');
+                }
                 el.classList.remove('hidden');
+                if (message.tokenStats) {
+                  el.setAttribute('data-tok-in', String(message.tokenStats.inTok || 0));
+                  el.setAttribute('data-tok-cache', String(message.tokenStats.cacheTok || 0));
+                  el.setAttribute('data-tok-out', String(message.tokenStats.outTok || 0));
+                  el.setAttribute('data-tok-cost', String(Number(message.tokenStats.cost || 0).toFixed(8)));
+                  el.setAttribute('data-tok-in-cost', String(Number(message.tokenStats.inCost || 0).toFixed(8)));
+                  el.setAttribute('data-tok-cache-cost', String(Number(message.tokenStats.cacheCost || 0).toFixed(8)));
+                  el.setAttribute('data-tok-out-cost', String(Number(message.tokenStats.outCost || 0).toFixed(8)));
+                  el.setAttribute('data-tok-saved', String(Number(message.tokenStats.saved || 0).toFixed(8)));
+                }
+                if (typeof message.sessionPeakBadgeHtml === 'string') {
+                  const infoLine = el.querySelector('.session-nav-info-line');
+                  if (infoLine) {
+                    const existingBadge = infoLine.querySelector('.session-token-badge');
+                    if (existingBadge) {
+                      existingBadge.outerHTML = message.sessionPeakBadgeHtml;
+                    } else if (message.sessionPeakBadgeHtml) {
+                      infoLine.insertAdjacentHTML('beforeend', message.sessionPeakBadgeHtml);
+                    }
+                  }
+                }
                 const parentGroup = el.closest('details.session-time-group');
                 if (parentGroup) {
                   parentGroup.classList.remove('hidden');
@@ -5090,9 +5797,21 @@ export class DashboardWebviewPanel {
                 el.classList.remove('selected');
               }
             });
+            document.querySelectorAll('.executor-subnav-item').forEach(subEl => {
+              const isSubSel = subEl.getAttribute('data-id') === message.sessionId;
+              subEl.classList.toggle('selected', isSubSel);
+              if (isSubSel) {
+                const subDetails = subEl.closest('details.executor-subtree-details');
+                if (subDetails && !subDetails.open) subDetails.open = true;
+              }
+            });
+            updateSidebarTokenRollup();
 
             setTimeout(renderMermaidDiagrams, 80);
             setTimeout(initReaderScrollObserver, 100);
+            setTimeout(() => {
+              if (typeof initHeaderOverflowObserver === 'function') initHeaderOverflowObserver();
+            }, 40);
             onSearchInputChanged('transcriptSearch');
 
             const forceEdge = forceScrollEdge || message.forceScrollEdge;
@@ -5100,6 +5819,9 @@ export class DashboardWebviewPanel {
               reader.scrollTop = 0;
               const header = document.getElementById('readerHeader');
               if (header) header.classList.remove('scrolled');
+              if (typeof resetHeaderScrollCollapse === 'function') {
+                resetHeaderScrollCollapse();
+              }
               const btnTop = document.getElementById('btnScrollTop');
               const btnBottom = document.getElementById('btnScrollBottom');
               if (btnTop) btnTop.classList.remove('has-new-messages');
@@ -5161,7 +5883,7 @@ export class DashboardWebviewPanel {
               }
               filterSessions();
             } else if (message.command === 'updateGitRemoteUrl') {
-              const el = document.getElementById('cfgGitRemoteUrl');
+              const el = document.getElementById('cfgGitRemote') || document.getElementById('cfgGitRemoteUrl');
               if (el && message.remoteUrl) {
                 el.value = message.remoteUrl;
               }
@@ -5212,10 +5934,10 @@ export class DashboardWebviewPanel {
                   listEl.scrollTop = prevScroll;
                 }
               }
-              const brandingBadge = document.querySelector('.branding-badge');
-              if (brandingBadge && message.totalSessions !== undefined) {
-                brandingBadge.textContent = '💬 ' + message.totalSessions;
-                brandingBadge.title = 'Total conversation sessions loaded: ' + message.totalSessions;
+              const appTitleEl = document.getElementById('appTitleText');
+              if (appTitleEl && message.totalSessions !== undefined) {
+                const ver = appTitleEl.getAttribute('data-version') || '';
+                appTitleEl.title = 'Brain Hub for Antigravity v' + ver + ' (' + message.totalSessions + ' sessions)';
               }
             } else if (message.command === 'updateReader') {
               const reader = document.getElementById('dashboardReader');
@@ -5226,12 +5948,14 @@ export class DashboardWebviewPanel {
                 if (isLive) {
                   const searchInput = document.getElementById('transcriptSearch');
                   const isSearching = !!(searchInput && (searchInput.value.trim().length > 0 || document.activeElement === searchInput));
+                  const sel = window.getSelection ? window.getSelection() : null;
+                  const hasActiveSelection = !!(sel && sel.toString().trim().length > 0 && reader.contains(sel.anchorNode));
 
-                  const isStrictlyAtActiveEdge = !isSearching && (isNewestFirst
+                  const isAtActiveEdge = isNewestFirst
                     ? (reader.scrollTop <= 30)
-                    : (reader.scrollTop + reader.clientHeight >= reader.scrollHeight - 30));
+                    : (reader.scrollTop + reader.clientHeight >= reader.scrollHeight - 30);
 
-                  if (!isStrictlyAtActiveEdge) {
+                  if (isSearching || hasActiveSelection) {
                     pendingDashboardLiveUpdate = message;
                     const targetBtn = document.getElementById(isNewestFirst ? 'btnScrollTop' : 'btnScrollBottom');
                     if (targetBtn) {
@@ -5239,9 +5963,36 @@ export class DashboardWebviewPanel {
                     }
                     return;
                   }
+
+                  pendingDashboardLiveUpdate = null;
+                  applyDashboardReaderUpdate(message, isNewestFirst, message.forceScrollEdge);
+                  if (!isAtActiveEdge) {
+                    const targetBtn = document.getElementById(isNewestFirst ? 'btnScrollTop' : 'btnScrollBottom');
+                    if (targetBtn) {
+                      targetBtn.classList.add('has-new-messages');
+                    }
+                  }
+                  return;
                 }
 
                 pendingDashboardLiveUpdate = null;
+                applyDashboardReaderUpdate(message, isNewestFirst, message.forceScrollEdge);
+              }
+            } else if (message.command === 'liveStepsUpdated') {
+              if (message.tokenBannerHtml !== undefined) {
+                const existingBanner = document.getElementById('readerTokenBanner');
+                if (existingBanner) {
+                  const existingDrawer = document.getElementById('tokenTelemetryDrawer');
+                  const wasTokenDrawerOpen = !!(existingDrawer && existingDrawer.open);
+                  existingBanner.outerHTML = message.tokenBannerHtml;
+                  if (wasTokenDrawerOpen) {
+                    const newDrawer = document.getElementById('tokenTelemetryDrawer');
+                    if (newDrawer) newDrawer.open = true;
+                  }
+                }
+              }
+              if (message.chatHtml) {
+                const isNewestFirst = (message.messageOrder || (document.getElementById('cfgMessageOrder') ? document.getElementById('cfgMessageOrder').value : '') || 'newestFirst') === 'newestFirst';
                 applyDashboardReaderUpdate(message, isNewestFirst, message.forceScrollEdge);
               }
             } else if (message.command === 'deepSearchResults') {
@@ -5256,6 +6007,11 @@ export class DashboardWebviewPanel {
             const isCollapsed = bodyEl.classList.toggle('sidebar-collapsed');
             if (btn) {
               btn.classList.toggle('active', isCollapsed);
+              const icon = btn.querySelector('.codicon');
+              if (icon) {
+                icon.classList.toggle('codicon-layout-sidebar-left-off', isCollapsed);
+                icon.classList.toggle('codicon-layout-sidebar-left', !isCollapsed);
+              }
             }
             vscode.postMessage({ command: 'setSidebarCollapsed', collapsed: isCollapsed });
           }
@@ -5392,33 +6148,38 @@ export class DashboardWebviewPanel {
             vscode.postMessage({ command: 'deepSearchSessions', query: query });
           }
 
-          function applyDeepSearchResults(query, matchedIds) {
+          function evaluateSidebarFilters(query, matchedIdsSet) {
             const input = document.getElementById('dashboardSearch');
-            const currentQuery = (input && input.value ? input.value : '').toLowerCase().trim();
-            if (!currentQuery || query.toLowerCase().trim() !== currentQuery) {
-              return;
-            }
-
-            currentDeepMatchedIds = new Set(matchedIds);
+            const badge = document.getElementById('dashboardSearchCount');
+            if (!input) return;
+            const normQuery = (query !== undefined ? query : (input.value || '')).toLowerCase().trim();
             const items = document.querySelectorAll('.session-nav-item');
             let visibleCount = 0;
             const totalCount = items.length;
 
             items.forEach(item => {
               const text = item.getAttribute('data-text') || '';
+              const descText = item.getAttribute('data-descendant-text') || '';
+              const descIds = (item.getAttribute('data-descendant-ids') || '').split(',').filter(Boolean);
               const sid = (item.getAttribute('data-id') || '').toLowerCase();
               const rawId = item.getAttribute('data-id') || '';
-              const isLocalMatch = text.includes(currentQuery) || sid.includes(currentQuery);
-              const isDeepMatch = currentDeepMatchedIds.has(rawId);
-              const matchesSearch = isLocalMatch || isDeepMatch;
+              const isLocalMatch = !normQuery || text.includes(normQuery) || sid.includes(normQuery);
+              const isDescendantTextMatch = !!(normQuery && descText.includes(normQuery));
+              const isDeepSelfMatch = matchedIdsSet.has(rawId);
+              const isDeepDescendantMatch = descIds.some(did => matchedIdsSet.has(did));
+              const matchesSearch = isLocalMatch || isDescendantTextMatch || isDeepSelfMatch || isDeepDescendantMatch;
 
               const matchesWs = matchesWorkspaceFilter(item);
               const matchesEmpty = matchesHideEmptyFilter(item);
+              const treeNode = item.closest('.session-tree-node');
+              const hasSelectedChild = !!(treeNode && treeNode.querySelector('.executor-subnav-item.selected'));
+              const isSelected = item.classList.contains('selected');
+              const isTreeSelected = isSelected || hasSelectedChild;
 
-              if (matchesSearch && matchesWs && matchesEmpty) {
+              if ((matchesSearch && matchesWs && matchesEmpty) || isTreeSelected) {
                 item.classList.remove('hidden');
                 visibleCount++;
-                if (isDeepMatch && !isLocalMatch) {
+                if ((isDeepSelfMatch || isDeepDescendantMatch) && !isLocalMatch && !isDescendantTextMatch) {
                   item.classList.add('deep-match');
                 } else {
                   item.classList.remove('deep-match');
@@ -5427,15 +6188,74 @@ export class DashboardWebviewPanel {
                 item.classList.add('hidden');
                 item.classList.remove('deep-match');
               }
+
+              if (treeNode) {
+                const subDetails = treeNode.querySelector('details.executor-subtree-details');
+                if (subDetails) {
+                  if (hasSelectedChild || (normQuery && (isDescendantTextMatch || isDeepDescendantMatch))) {
+                    subDetails.open = true;
+                  }
+                  subDetails.querySelectorAll('.executor-subnav-item').forEach(subEl => {
+                    const subRawId = subEl.getAttribute('data-id') || '';
+                    const subText = subEl.getAttribute('data-text') || '';
+                    const subDeepMatch = matchedIdsSet.has(subRawId);
+                    const subLocalMatch = !!(normQuery && (subText.includes(normQuery) || subRawId.toLowerCase().includes(normQuery)));
+                    subEl.classList.toggle('deep-match', subDeepMatch && !subLocalMatch);
+                  });
+                }
+              }
             });
 
-            const badge = document.getElementById('dashboardSearchCount');
-            if (badge && (currentQuery || isWorkspaceFilterActive || isHideEmptyActive)) {
-              badge.textContent = visibleCount + '/' + totalCount;
-              badge.classList.add('visible');
-              badge.classList.toggle('has-matches', visibleCount > 0);
-              badge.classList.toggle('no-matches', visibleCount === 0);
+            // Update time groups visibility & badges
+            const groups = document.querySelectorAll('.session-time-group');
+            groups.forEach(group => {
+              const visibleInGroup = group.querySelectorAll('.session-nav-item:not(.hidden)').length;
+              const totalInGroup = group.querySelectorAll('.session-nav-item').length;
+              const countBadge = group.querySelector('.session-group-count');
+              const hasSelectedInGroup = !!group.querySelector('.session-nav-item.selected, .executor-subnav-item.selected');
+
+              if (visibleInGroup === 0 && !hasSelectedInGroup) {
+                group.classList.add('hidden');
+              } else {
+                group.classList.remove('hidden');
+                if (normQuery || hasSelectedInGroup) {
+                  group.open = true;
+                }
+                if (normQuery || isWorkspaceFilterActive || isHideEmptyActive) {
+                  if (countBadge) {
+                    countBadge.textContent = visibleInGroup + '/' + totalInGroup;
+                  }
+                } else {
+                  if (countBadge) {
+                    countBadge.textContent = String(totalInGroup);
+                  }
+                }
+              }
+            });
+
+            if (badge) {
+              if (normQuery || isWorkspaceFilterActive || isHideEmptyActive) {
+                badge.textContent = visibleCount + '/' + totalCount;
+                badge.classList.add('visible');
+                badge.classList.toggle('has-matches', visibleCount > 0);
+                badge.classList.toggle('no-matches', visibleCount === 0);
+              } else {
+                badge.classList.remove('visible', 'has-matches', 'no-matches');
+                badge.textContent = '';
+              }
             }
+          }
+
+          function applyDeepSearchResults(query, matchedIds) {
+            const input = document.getElementById('dashboardSearch');
+            const currentQuery = (input && input.value ? input.value : '').toLowerCase().trim();
+            if (!currentQuery || query.toLowerCase().trim() !== currentQuery) {
+              return;
+            }
+
+            currentDeepMatchedIds = new Set(matchedIds);
+            evaluateSidebarFilters(currentQuery, currentDeepMatchedIds);
+            updateSidebarTokenRollup();
           }
 
           function clearSearchInput(inputId) {
@@ -5457,81 +6277,14 @@ export class DashboardWebviewPanel {
 
           function filterSessions() {
             const input = document.getElementById('dashboardSearch');
-            const badge = document.getElementById('dashboardSearchCount');
             if (!input) return;
             const query = (input.value || '').toLowerCase().trim();
-            const items = document.querySelectorAll('.session-nav-item');
-            let visibleCount = 0;
-            const totalCount = items.length;
 
             if (query !== currentDeepSearchQuery) {
               currentDeepMatchedIds.clear();
             }
 
-            items.forEach(item => {
-              const text = item.getAttribute('data-text') || '';
-              const sid = (item.getAttribute('data-id') || '').toLowerCase();
-              const rawId = item.getAttribute('data-id') || '';
-              const isLocalMatch = !query || text.includes(query) || sid.includes(query);
-              const isDeepMatch = currentDeepMatchedIds.has(rawId);
-              const matchesSearch = isLocalMatch || isDeepMatch;
-
-              const matchesWs = matchesWorkspaceFilter(item);
-              const matchesEmpty = matchesHideEmptyFilter(item);
-              const isSelected = item.classList.contains('selected');
-
-              if ((matchesSearch && matchesWs && matchesEmpty) || isSelected) {
-                item.classList.remove('hidden');
-                visibleCount++;
-                if (isDeepMatch && !isLocalMatch) {
-                  item.classList.add('deep-match');
-                } else {
-                  item.classList.remove('deep-match');
-                }
-              } else {
-                item.classList.add('hidden');
-                item.classList.remove('deep-match');
-              }
-            });
-
-            // Update time groups visibility & badges
-            const groups = document.querySelectorAll('.session-time-group');
-            groups.forEach(group => {
-              const visibleInGroup = group.querySelectorAll('.session-nav-item:not(.hidden)').length;
-              const totalInGroup = group.querySelectorAll('.session-nav-item').length;
-              const countBadge = group.querySelector('.session-group-count');
-              const hasSelectedInGroup = !!group.querySelector('.session-nav-item.selected');
-
-              if (visibleInGroup === 0 && !hasSelectedInGroup) {
-                group.classList.add('hidden');
-              } else {
-                group.classList.remove('hidden');
-                if (query || hasSelectedInGroup) {
-                  group.open = true;
-                }
-                if (query || isWorkspaceFilterActive || isHideEmptyActive) {
-                  if (countBadge) {
-                    countBadge.textContent = visibleInGroup + '/' + totalInGroup;
-                  }
-                } else {
-                  if (countBadge) {
-                    countBadge.textContent = String(totalInGroup);
-                  }
-                }
-              }
-            });
-
-            if (badge) {
-              if (query || isWorkspaceFilterActive || isHideEmptyActive) {
-                badge.textContent = visibleCount + '/' + totalCount;
-                badge.classList.add('visible');
-                badge.classList.toggle('has-matches', visibleCount > 0);
-                badge.classList.toggle('no-matches', visibleCount === 0);
-              } else {
-                badge.classList.remove('visible', 'has-matches', 'no-matches');
-                badge.textContent = '';
-              }
-            }
+            evaluateSidebarFilters(query, currentDeepMatchedIds);
 
             if (deepSearchDebounceTimer) {
               clearTimeout(deepSearchDebounceTimer);
@@ -5542,6 +6295,76 @@ export class DashboardWebviewPanel {
                 triggerDeepSearch(query);
               }, 300);
             }
+            updateSidebarTokenRollup();
+          }
+
+          function formatCompactTokensClient(count) {
+            const safe = Math.max(0, Math.floor(Number(count) || 0));
+            if (safe === 0) return '0';
+            if (safe < 1000) return String(safe);
+            if (safe < 1000000) {
+              const k = Math.round((safe / 1000) * 10) / 10;
+              return k.toFixed(1).replace(/\\.0$/, '') + 'k';
+            }
+            const m = Math.round((safe / 1000000) * 100) / 100;
+            return m.toFixed(2).replace(/\\.?0+$/, '') + 'M';
+          }
+
+          function formatUsdCostClient(amount) {
+            const safe = Math.max(0, Number(amount) || 0);
+            if (!isFinite(safe) || safe === 0) return '$0.00';
+            if (safe < 0.01) return '$' + safe.toFixed(4);
+            return '$' + safe.toFixed(2);
+          }
+
+          function updateSidebarTokenRollup() {
+            const box = document.getElementById('sidebarTokenRollup');
+            if (!box) return;
+            const visibleItems = document.querySelectorAll('.session-nav-item:not(.hidden)');
+            let count = 0;
+            let sumIn = 0;
+            let sumCache = 0;
+            let sumOut = 0;
+            let sumCost = 0;
+            let sumInCost = 0;
+            let sumCacheCost = 0;
+            let sumOutCost = 0;
+            let sumSaved = 0;
+
+            visibleItems.forEach(item => {
+              count++;
+              sumIn += Number(item.getAttribute('data-tok-in') || 0) || 0;
+              sumCache += Number(item.getAttribute('data-tok-cache') || 0) || 0;
+              sumOut += Number(item.getAttribute('data-tok-out') || 0) || 0;
+              sumCost += Number(item.getAttribute('data-tok-cost') || 0) || 0;
+              sumInCost += Number(item.getAttribute('data-tok-in-cost') || 0) || 0;
+              sumCacheCost += Number(item.getAttribute('data-tok-cache-cost') || 0) || 0;
+              sumOutCost += Number(item.getAttribute('data-tok-out-cost') || 0) || 0;
+              sumSaved += Number(item.getAttribute('data-tok-saved') || 0) || 0;
+            });
+
+            const totalCtxSum = sumIn + sumCache;
+            const cachePct = totalCtxSum > 0 ? Math.round((sumCache / totalCtxSum) * 100) : 0;
+            const wsLabel = currentWorkspaceNames.length > 0 ? currentWorkspaceNames.join(', ') : 'Project Rollup';
+            const scopeLabel = isWorkspaceFilterActive ? ('📁 ' + wsLabel) : '🌐 Visible Chats';
+
+            const scopeEl = document.getElementById('sidebarRollupScope');
+            const costEl = document.getElementById('sidebarRollupCost');
+            const metricsEl = document.getElementById('sidebarRollupMetrics');
+            if (scopeEl) scopeEl.textContent = scopeLabel + ' (' + count + ')';
+            if (costEl) costEl.textContent = '💰 ~' + formatUsdCostClient(sumCost);
+            if (metricsEl) {
+              metricsEl.innerHTML =
+                '<span>📥 ' + formatCompactTokensClient(sumIn) + '</span>' +
+                '<span>💾 ' + formatCompactTokensClient(sumCache) + '</span>' +
+                '<span>📤 ' + formatCompactTokensClient(sumOut) + '</span>' +
+                '<span>♻️ ' + cachePct + '%</span>';
+            }
+            box.title =
+              scopeLabel + ' (' + count + ' chats) | Σ Input: ' + sumIn.toLocaleString() +
+              ' (' + formatUsdCostClient(sumInCost) + ') | Σ Cached: ' + sumCache.toLocaleString() +
+              ' (' + formatUsdCostClient(sumCacheCost) + ') | Σ Output: ' + sumOut.toLocaleString() +
+              ' (' + formatUsdCostClient(sumOutCost) + ') | Cache Saved: ' + formatUsdCostClient(sumSaved);
           }
 
           function filterTranscriptMessages() {
@@ -5550,6 +6373,36 @@ export class DashboardWebviewPanel {
             if (!input) return;
             const rawQuery = input.value.trim();
             const lowerQuery = rawQuery.toLowerCase();
+            const timeline = document.getElementById('chatTimeline');
+            const overlayPanel = document.getElementById('executorProgressMatrix') || document.getElementById('swarmBoardPanel');
+            if (overlayPanel && timeline && timeline.style.display === 'none') {
+              const overlayRows = overlayPanel.querySelectorAll('tbody tr, .swarm-board-msg');
+              if (!rawQuery) {
+                overlayRows.forEach(row => row.classList.remove('hidden'));
+                if (badge) {
+                  badge.classList.remove('visible', 'has-matches', 'no-matches');
+                  badge.textContent = '';
+                }
+                return;
+              }
+              let overlayMatches = 0;
+              overlayRows.forEach(row => {
+                const rowText = (row.textContent || '').toLowerCase();
+                if (rowText.includes(lowerQuery)) {
+                  row.classList.remove('hidden');
+                  overlayMatches++;
+                } else {
+                  row.classList.add('hidden');
+                }
+              });
+              if (badge) {
+                badge.textContent = String(overlayMatches);
+                badge.classList.add('visible');
+                badge.classList.toggle('has-matches', overlayMatches > 0);
+                badge.classList.toggle('no-matches', overlayMatches === 0);
+              }
+              return;
+            }
             const cards = document.querySelectorAll('#chatTimeline .message-card, #chatTimeline details.internal-step-details, #chatTimeline details.autonomous-group-details, .checkpoint-banner, .subagent-banner, .system-event-banner');
 
             clearSearchHighlights();
@@ -5596,7 +6449,9 @@ export class DashboardWebviewPanel {
                 const stepAttr = card.getAttribute('data-step') || '';
                 let isMatched = (stepAttr === String(targetNum));
                 if (!isMatched && stepAttr.includes('-')) {
-                  const [start, end] = stepAttr.split('-').map(Number);
+                  const [rawStart, rawEnd] = stepAttr.split('-').map(Number);
+                  const start = Math.min(rawStart, rawEnd);
+                  const end = Math.max(rawStart, rawEnd);
                   if (!isNaN(start) && !isNaN(end) && targetNum >= start && targetNum <= end) {
                     isMatched = true;
                   }
@@ -5723,6 +6578,23 @@ export class DashboardWebviewPanel {
                 if (p) {
                   try { p = decodeURIComponent(p); } catch (err) {}
                   vscode.postMessage({ command: 'openIdePreview', filePath: p });
+                }
+                return;
+              }
+
+              // 0. Conversation link click -> switch to referenced executor session
+              const convLink = target.closest('.conversation-link, a[href^="conversation://"]');
+              if (convLink) {
+                e.preventDefault();
+                e.stopPropagation();
+                let convId = convLink.getAttribute('data-conversation-id');
+                if (!convId) {
+                  const href = convLink.getAttribute('href') || '';
+                  const m = href.match(new RegExp('conversation://([0-9a-f-]{36})', 'i'));
+                  if (m) convId = m[1];
+                }
+                if (convId) {
+                  selectSession(convId);
                 }
                 return;
               }
@@ -6043,7 +6915,7 @@ export class DashboardWebviewPanel {
               svgW = svg.viewBox.baseVal.width;
               svgH = svg.viewBox.baseVal.height;
             } else if (svg.getAttribute('viewBox')) {
-              const parts = svg.getAttribute('viewBox').trim().split(/[\s,]+/);
+              const parts = svg.getAttribute('viewBox').trim().split(/[\\s,]+/);
               if (parts.length === 4) {
                 svgW = parseFloat(parts[2]);
                 svgH = parseFloat(parts[3]);
@@ -6443,6 +7315,9 @@ export class DashboardWebviewPanel {
             if (!reader._scrollHandlerBound) {
               reader._scrollHandlerBound = true;
               reader.addEventListener('scroll', () => {
+                if (typeof updateHeaderScrollCollapse === 'function') {
+                  updateHeaderScrollCollapse(reader.scrollTop, reader.scrollHeight, reader.clientHeight);
+                }
                 const isNewestFirst = (document.getElementById('cfgMessageOrder') ? document.getElementById('cfgMessageOrder').value : 'newestFirst') === 'newestFirst';
                 const isStrictlyAtActiveEdge = isNewestFirst
                   ? (reader.scrollTop <= 30)
@@ -6493,23 +7368,13 @@ export class DashboardWebviewPanel {
             }
           }
 
-          function openRichPreview(encodedPath) {
-            let p = decodeURIComponent(encodedPath || '');
-            if (p) {
-              vscode.postMessage({ command: 'openRichPreview', filePath: p });
-            }
-          }
-
-          function openIdePreview(encodedPath) {
-            let p = decodeURIComponent(encodedPath || '');
-            if (p) {
-              vscode.postMessage({ command: 'openIdePreview', filePath: p });
-            }
-          }
+          ${HeaderLayoutHelper.getSharedClientHeaderScript('readerHeader', cfg.defaultHeaderState === 'collapsed')}
 
           document.addEventListener('DOMContentLoaded', () => {
             renderMermaidDiagrams();
             initReaderScrollObserver();
+            syncHeaderCollapseUi();
+            initHeaderOverflowObserver();
             updateSearchPlaceholder();
             if (isWorkspaceFilterActive || isHideEmptyActive) {
               filterSessions();
@@ -6526,6 +7391,8 @@ export class DashboardWebviewPanel {
           setTimeout(() => {
             renderMermaidDiagrams();
             initReaderScrollObserver();
+            syncHeaderCollapseUi();
+            initHeaderOverflowObserver();
             updateSearchPlaceholder();
             if (isWorkspaceFilterActive || isHideEmptyActive) {
               filterSessions();
@@ -6548,6 +7415,14 @@ export class DashboardWebviewPanel {
           }, 200);
 
           try {
+            const initialSelectedEl = document.querySelector('.session-nav-item.selected');
+            if (initialSelectedEl) {
+              const parentGroup = initialSelectedEl.closest('details.session-time-group');
+              if (parentGroup && !parentGroup.open) {
+                parentGroup.open = true;
+              }
+              initialSelectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
             vscode.postMessage({ command: 'dashboardReady' });
           } catch (e) {}
         </script>
@@ -6561,9 +7436,12 @@ export class DashboardWebviewPanel {
     messages: ChatMessage[],
     threadSessions: ChatSession[],
     configState?: AppConfigState,
-    isLoadingPlaceholder: boolean = false
+    isLoadingPlaceholder: boolean = false,
+    allSessions?: ChatSession[],
+    swarmData?: SwarmSessionData | null
   ): string {
     if (!activeSession) {
+      MarkdownRenderer.setSessionPath(undefined);
       return `
         <div class="empty-reader">
           <h3>👈 Select a session from the left panel to inspect</h3>
@@ -6576,28 +7454,73 @@ export class DashboardWebviewPanel {
     const isNewestFirst = (configState?.messageOrder || 'newestFirst') === 'newestFirst';
     const isToolsExpanded = configState?.defaultToolsState === 'expanded';
     const isAiStepsExpanded = configState?.defaultAiStepsState === 'expanded';
+    const isHeaderCollapsed = configState?.defaultHeaderState === 'collapsed';
+    const isLiveAutoReload = Boolean(configState?.autoReloadOnLiveChat);
 
     const fullTimeStr = DashboardWebviewPanel.formatDateTimeRange(activeSession.createdAt, activeSession.lastModified, true);
+    const shortTimeStr = DashboardWebviewPanel.formatDateTimeRange(activeSession.createdAt, activeSession.lastModified, false);
     const userPromptTotal = messages.filter((m) => m.type === 'USER_INPUT').length || activeSession.userPromptCount || activeSession.messageCount || 0;
 
     const isThread = Boolean((activeSession.childIds && activeSession.childIds.length > 0) || activeSession.parentId);
     const totalArtifacts = activeSession.artifactCount || (activeSession.artifacts ? activeSession.artifacts.length : (activeSession.hasArtifacts ? 1 : 0));
     const hasArtifacts = activeSession.hasArtifacts || totalArtifacts > 0;
 
-    const threadBadge = isThread
-      ? '<span class="meta-badge green" title="Connected Conversation Thread (Multi-Session Chain)"><span class="meta-icon">🧵</span> Thread</span>'
-      : '<span class="meta-badge blue" title="Single Standalone Conversation"><span class="meta-icon">💬</span> Single Chat</span>';
-
-    const artifactBadge = hasArtifacts
-      ? `<span class="meta-badge purple" onclick="openArtifactsModal()" style="cursor: pointer;" title="View all ${totalArtifacts} artifacts generated in this session (Click to open)"><span class="meta-icon">📦</span> ${totalArtifacts > 0 ? `${totalArtifacts} ` : ''}Artifacts</span>`
-      : '<span class="meta-badge" style="opacity: 0.65;" title="No artifacts generated in this session"><span class="meta-icon">📦</span> No Artifacts</span>';
-    const typeBadgeDetail = `${threadBadge}${artifactBadge}`;
-
-    const formattedId = activeSession.id.length > 8
-      ? `${activeSession.id.substring(0, 4)}...${activeSession.id.substring(activeSession.id.length - 4)}`
-      : activeSession.id;
-
     const maxStepIndex = messages.reduce((max, m) => Math.max(max, m.index || 0), 0) || messages.length;
+    const tokenThresholds = TokenUsageMonitor.getThresholdsFromSettings();
+    const tokenPricing = TokenUsageMonitor.getPricingFromSettings();
+    const sessionsRef = Array.isArray(allSessions) ? allSessions : (this.allSessionsCache || []);
+    const execRootId = activeSession.executorRootId || activeSession.id;
+    const execRootSession = sessionsRef.find((s) => s.id === execRootId) || activeSession;
+    const bannerTreeRollup = !activeSession.executorParentId ? execRootSession.treeTokenUsage : undefined;
+    const tokenBannerHtml = TokenUsageMonitor.renderReaderTokenBannerHtml(
+      activeSession.tokenUsage,
+      tokenThresholds,
+      tokenPricing,
+      bannerTreeRollup
+    );
+    const executorSwitcherHtml = ExecutorLayoutHelper.renderExecutorSwitcherHtml(
+      activeSession,
+      sessionsRef,
+      activeSession.id,
+      this.activeExecutorTab,
+      swarmData,
+      false
+    );
+    const executorOverlayPanelHtml =
+      this.activeExecutorTab === 'progress'
+        ? ExecutorLayoutHelper.renderProgressMatrixHtml(execRootSession, sessionsRef, swarmData, tokenPricing, false)
+        : this.activeExecutorTab === 'swarm' && swarmData
+          ? ExecutorLayoutHelper.renderSwarmBoardHtml(swarmData, execRootSession, sessionsRef, false)
+          : '';
+
+    const headerMetaHtml = HeaderLayoutHelper.renderHeaderMetaHtml({
+      isLive: isLiveAutoReload,
+      isThread,
+      userPromptTotal,
+      maxStepIndex,
+      totalArtifacts,
+      hasArtifacts,
+      shortTimeStr,
+      fullTimeStr,
+      workspaceName: activeSession.workspaceName,
+      workspacePath: activeSession.workspacePath,
+      machineName: activeSession.machineName,
+      sessionId: activeSession.id,
+      planPath: activeSession.planPath,
+      walkthroughPath: activeSession.walkthroughPath
+    });
+
+    const collapsedStripHtml = HeaderLayoutHelper.renderCollapsedSummaryStripHtml({
+      isLive: isLiveAutoReload,
+      isThread,
+      userPromptTotal,
+      totalArtifacts,
+      hasArtifacts,
+      lastModified: activeSession.lastModified,
+      maxStepIndex,
+      tokenUsage: activeSession.tokenUsage,
+      thresholds: tokenThresholds
+    });
 
     let threadBannerHtml = '';
     if (threadSessions.length > 1) {
@@ -6629,48 +7552,25 @@ export class DashboardWebviewPanel {
       `;
     }
 
-    let artifactsHtml = '';
-    if (activeSession.hasArtifacts || totalArtifacts > 0) {
-      artifactsHtml = `
-        <div class="artifacts-bar">
-          <div class="artifacts-title">
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.6-1.2-1.6 1.2a.25.25 0 0 1-.4-.2Z"></path></svg>
-            <span>Session Artifacts:</span>
-          </div>
-          <div class="artifacts-links">
-            <button class="artifact-btn primary-artifact-btn" onclick="openArtifactsModal()" title="View all artifacts generated in this session (documents, AI images, browser videos, scratch files)">
-              <span class="artifact-icon">📦</span> All Artifacts (${totalArtifacts})
-            </button>
-            ${
-              activeSession.planPath
-                ? `<button class="artifact-btn" onclick="openRichPreview('${encodeURI(activeSession.planPath)}')" title="Open implementation_plan.md in Antigravity Rich Preview">
-                    <span class="artifact-icon">📋</span> Plan
-                  </button>`
-                : ''
-            }
-            ${
-              activeSession.walkthroughPath
-                ? `<button class="artifact-btn" onclick="openRichPreview('${encodeURI(activeSession.walkthroughPath)}')" title="Open walkthrough.md in Antigravity Rich Preview">
-                    <span class="artifact-icon">✅</span> Walkthrough
-                  </button>`
-                : ''
-            }
-          </div>
-        </div>
-      `;
-    }
-
-    const serializedArtifacts = (activeSession.artifacts || []).map((art) => ({
-      name: art.name,
-      filePath: art.filePath,
-      category: art.category,
-      source: art.source,
-      sizeBytes: art.sizeBytes,
-      mtime: art.mtime,
-      prompt: art.prompt,
-      mimeType: art.mimeType,
-      webUri: this.panel.webview.asWebviewUri(vscode.Uri.file(art.filePath)).toString()
-    }));
+    const serializedArtifacts = (activeSession.artifacts || []).map((art) => {
+      let webUri = '';
+      if (!this.isDisposed) {
+        try {
+          webUri = this.panel.webview.asWebviewUri(vscode.Uri.file(art.filePath)).toString();
+        } catch {}
+      }
+      return {
+        name: art.name,
+        filePath: art.filePath,
+        category: art.category,
+        source: art.source,
+        sizeBytes: art.sizeBytes,
+        mtime: art.mtime,
+        prompt: art.prompt,
+        mimeType: art.mimeType,
+        webUri
+      };
+    });
 
     let renderedMessages = '';
     if (isLoadingPlaceholder) {
@@ -6714,21 +7614,17 @@ export class DashboardWebviewPanel {
       `;
     }
 
+    const titleText = this.isShowingCombinedThread ? `Thread: ${activeSession.threadTitle || activeSession.title}` : activeSession.title;
     return `
       <div id="readerTopSentinel" style="position: absolute; top: 0; left: 0; width: 100%; height: 35px; pointer-events: none; opacity: 0; z-index: -1;"></div>
-      <div class="reader-header" id="readerHeader">
+      <div class="reader-header${isHeaderCollapsed ? ' header-collapsed' : ''}" id="readerHeader">
         <div class="reader-header-column">
-          <h2 class="reader-title">${MarkdownRenderer.escapeHtml(this.isShowingCombinedThread ? `Thread: ${activeSession.threadTitle || activeSession.title}` : activeSession.title)}</h2>
-          <div class="header-meta" id="headerMeta">
-            ${configState?.autoReloadOnLiveChat ? '<span class="meta-badge green live-badge" title="Live Auto-Reload Active: Automatically syncs when new AI steps arrive"><span class="live-dot"></span>Live</span>' : ''}
-            ${typeBadgeDetail}
-            <span class="meta-badge blue" title="Timeline: Created ➔ Last Message">${fullTimeStr}</span>
-            <span class="meta-badge cyan" title="User chat messages in this session">💬${userPromptTotal}</span>
-            <span class="meta-badge purple" title="Total Execution Steps: ${maxStepIndex}">🤖${maxStepIndex}</span>
-            ${activeSession.workspaceName ? `<span class="meta-badge ws" title="Project Folder: ${activeSession.workspacePath || activeSession.workspaceName}">📁 ${MarkdownRenderer.escapeHtml(activeSession.workspaceName)}</span>` : ''}
-            ${activeSession.machineName ? `<span class="meta-badge pc" title="Computer: ${activeSession.machineName}">💻 ${MarkdownRenderer.escapeHtml(activeSession.machineName)}</span>` : ''}
-            <span class="meta-badge purple" title="Full Session ID: ${activeSession.id}">🆔 ${formattedId}</span>
+          <div class="reader-title-row">
+            <h2 class="reader-title" title="${MarkdownRenderer.escapeHtml(titleText)}">${MarkdownRenderer.escapeHtml(titleText)}</h2>
+            <button class="action-btn naked-btn header-collapse-toggle" id="headerCollapseToggleBtn" onclick="toggleHeaderCollapse()" title="${isHeaderCollapsed ? 'Expand header (show pills, toolbar, and full token bar)' : 'Collapse header to compact 1-line summary'}">${HeaderLayoutHelper.renderCollapseToggleIconSvg(isHeaderCollapsed)}</button>
           </div>
+          ${headerMetaHtml}
+          ${collapsedStripHtml}
           
           <!-- Single Compact Unified Toolbar with Autowrap -->
           <div class="reader-combined-toolbar">
@@ -6771,13 +7667,16 @@ export class DashboardWebviewPanel {
               <button class="clear-search-btn" id="clearTranscriptSearch" onclick="clearSearchInput('transcriptSearch')" title="Clear search">✕</button>
             </div>
           </div>
+
+          ${tokenBannerHtml}
         </div>
       </div>
 
       ${threadBannerHtml}
-      ${artifactsHtml}
+      ${executorSwitcherHtml}
+      ${executorOverlayPanelHtml}
       <div id="artifactsDataHolder" data-artifacts="${Buffer.from(JSON.stringify(serializedArtifacts)).toString('base64')}" style="display:none;"></div>
-      <div class="chat-timeline" id="chatTimeline">
+      <div class="chat-timeline" id="chatTimeline" ${executorOverlayPanelHtml ? 'style="display:none;"' : ''}>
         ${renderedMessages}
       </div>
 
@@ -6791,15 +7690,20 @@ export class DashboardWebviewPanel {
   private renderMessageItem(item: MessageRenderItem, isToolsExpanded: boolean = false, isAiStepsExpanded: boolean = false): string {
     if (item.type === 'autonomous_group' && item.group) {
       const group = item.group;
-      const firstIndex = group[0].index;
-      const lastIndex = group[group.length - 1].index;
+      const firstIndex = Math.min(group[0].index, group[group.length - 1].index);
+      const lastIndex = Math.max(group[0].index, group[group.length - 1].index);
 
       const toolNamesSet = new Set<string>();
       let autoCount = 0;
       let sysCount = 0;
 
       group.forEach(g => {
-        if (g.source === 'SYSTEM' || g.type === 'SYSTEM_MESSAGE') {
+        if (
+          g.source === 'SYSTEM' ||
+          g.type === 'SYSTEM_MESSAGE' ||
+          g.type === 'CHECKPOINT' ||
+          g.type === 'SUBAGENT_NOTIFICATION'
+        ) {
           sysCount++;
         } else {
           autoCount++;
@@ -6809,7 +7713,12 @@ export class DashboardWebviewPanel {
       const toolNames = toolNamesSet.size > 0 ? Array.from(toolNamesSet).join(', ') : (autoCount > 0 ? 'Reasoning' : 'System Signals');
 
       const innerCardsHtml = group.map(g => {
-        if (g.source === 'SYSTEM' || g.type === 'SYSTEM_MESSAGE') {
+        if (
+          g.source === 'SYSTEM' ||
+          g.type === 'SYSTEM_MESSAGE' ||
+          g.type === 'CHECKPOINT' ||
+          g.type === 'SUBAGENT_NOTIFICATION'
+        ) {
           return this.renderMessage(g, isToolsExpanded);
         }
         return this.renderSingleAutonomousStep(g, isToolsExpanded);
@@ -6831,7 +7740,7 @@ export class DashboardWebviewPanel {
       }
 
       return `
-        <details class="autonomous-group-details is-internal-step" ${isAiStepsExpanded ? 'open' : ''} data-step="${firstIndex}-${lastIndex}">
+        <details class="autonomous-group-details is-internal-step" ${isAiStepsExpanded ? 'open' : ''} data-step="${firstIndex}-${lastIndex}" data-group-start="${firstIndex}">
           <summary class="autonomous-group-summary" title="Click to expand/collapse internal execution step and system event list">
             <span>⚡</span>
             <span><b>${actionTitle}</b></span>
@@ -6856,7 +7765,7 @@ export class DashboardWebviewPanel {
     let thinkingHtml = '';
     if (msg.thinking) {
       thinkingHtml = `
-        <details class="chat-details" ${isToolsExpanded ? 'open' : ''}>
+        <details class="chat-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-thinking">
           <summary title="Click to view AI reasoning and plan"><span>🧠</span><span>Model Reasoning & Planning</span></summary>
           <div class="details-inner-content">
             ${MarkdownRenderer.render(msg.thinking)}
@@ -6867,12 +7776,33 @@ export class DashboardWebviewPanel {
 
     let toolCallsHtml = '';
     if (msg.toolCalls && msg.toolCalls.length > 0) {
+      const sessionsRef = this.allSessionsCache || [];
       toolCallsHtml = msg.toolCalls
-        .map((tc) => {
-          const isSuccess = tc.exitCode === 0 || tc.status === 'DONE' || !tc.exitCode;
+        .map((tc, tcIdx) => {
+          if (tc.name === 'send_message') {
+            return ExecutorLayoutHelper.renderSendMessageCardHtml(tc, false);
+          }
+          if (tc.name === 'invoke_subagent') {
+            const argsObj: Record<string, any> =
+              typeof tc.args === 'string' ? (() => { try { return JSON.parse(tc.args); } catch { return {}; } })() : (tc.args || {});
+            const cidMatch = tc.output ? String(tc.output).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) : null;
+            const convId = cidMatch ? cidMatch[1].toLowerCase() : undefined;
+            const linkedChild = convId ? sessionsRef.find((s) => s.id.toLowerCase() === convId) : undefined;
+            return ExecutorLayoutHelper.renderInlineSubagentCardHtml(
+              {
+                role: argsObj.Role || argsObj.role,
+                typeName: argsObj.TypeName || argsObj.typeName,
+                conversationId: convId,
+                status: tc.status
+              },
+              linkedChild,
+              false
+            );
+          }
+          const isSuccess = tc.status !== 'ERROR' && (tc.exitCode === undefined || tc.exitCode === 0);
           let argsJson = tc.args ? (typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args, null, 2)) : '';
           return `
-            <details class="chat-details" ${isToolsExpanded ? 'open' : ''}>
+            <details class="chat-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-tool-${tcIdx}">
               <summary title="Click to inspect tool arguments and output">
                 <span>⚙️</span>
                 <span><b>Tool:</b> <code>${tc.name}</code></span>
@@ -6894,7 +7824,7 @@ export class DashboardWebviewPanel {
         .map(p => MarkdownRenderer.render(p))
         .join('\n<hr style="border:none;border-top:1px dashed var(--border-color);margin:8px 0;" />\n');
       systemPayloadsHtml = `
-        <details class="chat-details" ${isToolsExpanded ? 'open' : ''}>
+        <details class="chat-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-syslogs">
           <summary title="Click to view background system events and task logs"><span>⚙️</span><span>System / Task Logs</span></summary>
           <div class="details-inner-content">
             ${innerHtml}
@@ -6910,12 +7840,14 @@ export class DashboardWebviewPanel {
     }
 
     const toolNames = msg.toolCalls && msg.toolCalls.length > 0 ? msg.toolCalls.map(t => t.name).join(', ') : 'Reasoning';
+    const stepTokenBadge = TokenUsageMonitor.renderStepTokenBadgeHtml(msg);
 
     return `
       <details class="internal-step-details" ${isToolsExpanded ? 'open' : ''} data-step="${msg.index}">
         <summary title="Click to expand/collapse action details">
           <span>⚡</span>
           <span>Action #${msg.index}</span>
+          ${stepTokenBadge}
           <span style="font-size:11px;color:var(--accent-purple);margin-left:auto;font-family:var(--font-mono);">[${MarkdownRenderer.escapeHtml(toolNames)}]</span>
         </summary>
         <div class="internal-step-body">
@@ -6929,6 +7861,27 @@ export class DashboardWebviewPanel {
   }
 
   private renderMessage(msg: ChatMessage, isToolsExpanded: boolean = false): string {
+    if (msg.type === 'INVOKE_SUBAGENT') {
+      const sessionsRef = this.allSessionsCache || [];
+      const matches = Array.from(
+        String(msg.content || '').matchAll(/"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/gi)
+      );
+      if (matches.length > 0) {
+        return matches
+          .map((m) => {
+            const convId = m[1].toLowerCase();
+            const linkedChild = sessionsRef.find((s) => s.id.toLowerCase() === convId);
+            return ExecutorLayoutHelper.renderInlineSubagentCardHtml({ conversationId: convId, status: msg.status }, linkedChild, false);
+          })
+          .join('\n');
+      }
+      return ExecutorLayoutHelper.renderInlineSubagentCardHtml({ status: msg.status }, undefined, false);
+    }
+
+    if (msg.interAgentMeta) {
+      return ExecutorLayoutHelper.renderInterAgentMessageHtml(msg, this.allSessionsCache || [], false);
+    }
+
     if (msg.type === 'USER_INPUT') {
       const timeStr = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('en-US') : `Step #${msg.index}`;
       const userIndexLabel = msg.userIndex ? `User #${msg.userIndex}` : 'User';
@@ -6974,7 +7927,7 @@ export class DashboardWebviewPanel {
       let thinkingHtml = '';
       if (msg.thinking) {
         thinkingHtml = `
-          <details class="chat-details" ${isToolsExpanded ? 'open' : ''}>
+          <details class="chat-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-thinking">
             <summary title="Click to view AI reasoning and plan"><span>🧠</span><span>Model Reasoning & Planning</span></summary>
             <div class="details-inner-content">
               ${MarkdownRenderer.render(msg.thinking)}
@@ -6985,12 +7938,33 @@ export class DashboardWebviewPanel {
 
       let toolCallsHtml = '';
       if (msg.toolCalls && msg.toolCalls.length > 0) {
+        const sessionsRef = this.allSessionsCache || [];
         toolCallsHtml = msg.toolCalls
-          .map((tc) => {
-            const isSuccess = tc.exitCode === 0 || tc.status === 'DONE' || !tc.exitCode;
+          .map((tc, tcIdx) => {
+            if (tc.name === 'send_message') {
+              return ExecutorLayoutHelper.renderSendMessageCardHtml(tc, false);
+            }
+            if (tc.name === 'invoke_subagent') {
+              const argsObj: Record<string, any> =
+                typeof tc.args === 'string' ? (() => { try { return JSON.parse(tc.args); } catch { return {}; } })() : (tc.args || {});
+              const cidMatch = tc.output ? String(tc.output).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) : null;
+              const convId = cidMatch ? cidMatch[1].toLowerCase() : undefined;
+              const linkedChild = convId ? sessionsRef.find((s) => s.id.toLowerCase() === convId) : undefined;
+              return ExecutorLayoutHelper.renderInlineSubagentCardHtml(
+                {
+                  role: argsObj.Role || argsObj.role,
+                  typeName: argsObj.TypeName || argsObj.typeName,
+                  conversationId: convId,
+                  status: tc.status
+                },
+                linkedChild,
+                false
+              );
+            }
+            const isSuccess = tc.status !== 'ERROR' && (tc.exitCode === undefined || tc.exitCode === 0);
             let argsJson = tc.args ? (typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args, null, 2)) : '';
             return `
-              <details class="chat-details" ${isToolsExpanded ? 'open' : ''}>
+              <details class="chat-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-tool-${tcIdx}">
                 <summary title="Click to inspect tool arguments and output">
                   <span>⚙️</span>
                   <span><b>Tool:</b> <code>${tc.name}</code></span>
@@ -7020,7 +7994,7 @@ export class DashboardWebviewPanel {
           .map(p => MarkdownRenderer.render(p))
           .join('\n<hr style="border:none;border-top:1px dashed var(--border-color);margin:8px 0;" />\n');
         systemPayloadsHtml = `
-          <details class="chat-details system-payload-details" ${isToolsExpanded ? 'open' : ''} style="margin-bottom:10px;border-left:2px solid var(--accent-cyan, #00d2ff);">
+          <details class="chat-details system-payload-details" ${isToolsExpanded ? 'open' : ''} data-detail-key="step-${msg.index}-syslogs" style="margin-bottom:10px;border-left:2px solid var(--accent-cyan, #00d2ff);">
             <summary title="Click to view background system events and task completion logs">
               <span>⚙️</span>
               <span><b>System & Background Task Logs</b></span>
@@ -7034,6 +8008,7 @@ export class DashboardWebviewPanel {
       }
 
       const rawAiMsgEncoded = encodeURIComponent(msg.cleanContent || msg.content || '');
+      const stepTokenBadge = TokenUsageMonitor.renderStepTokenBadgeHtml(msg);
 
       return `
         <div class="message-card ai" data-step="${msg.index}">
@@ -7041,6 +8016,7 @@ export class DashboardWebviewPanel {
             <div class="message-avatar avatar-ai" title="Antigravity AI Response">✨</div>
             <span class="message-sender-name">Antigravity AI</span>
             <span class="message-time">${timeStr}</span>
+            ${stepTokenBadge}
             <div class="message-header-actions" style="margin-left:auto;display:flex;align-items:center;gap:8px;">
               <span class="meta-step-tag" style="font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono);" title="Execution Timeline Step #${msg.index}">Step #${msg.index}</span>
               <button class="copy-msg-btn" data-raw-msg="${rawAiMsgEncoded}" title="Copy original raw markdown response">
@@ -7059,22 +8035,6 @@ export class DashboardWebviewPanel {
             ${textToRender ? `<div>${MarkdownRenderer.render(textToRender)}</div>` : ''}
           </div>
         </div>
-      `;
-    } else if (msg.type === 'SYSTEM_MESSAGE' || msg.source === 'SYSTEM') {
-      const renderedContent = msg.content ? MarkdownRenderer.render(msg.content) : '<em>No system event content.</em>';
-      return `
-        <details class="system-event-banner is-internal-step" data-step="${msg.index}" style="margin:8px 0;border:1px dashed var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);overflow:hidden;">
-          <summary style="display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-secondary);user-select:none;" title="Click to view system event details">
-            <span>⚙️</span>
-            <span><b>System Event #${msg.index}</b></span>
-            <span style="margin-left:auto;font-size:11px;color:var(--text-muted);">Click to view</span>
-          </summary>
-          <div class="system-event-body" style="padding:12px 18px;border-top:1px dashed var(--border-color);background:var(--bg-primary);font-size:13px;line-height:1.6;">
-            <div class="markdown-content">
-              ${renderedContent}
-            </div>
-          </div>
-        </details>
       `;
     } else if (msg.type === 'CHECKPOINT') {
       const renderedContent = msg.content ? MarkdownRenderer.render(msg.content) : '<em>No checkpoint summary content available.</em>';
@@ -7103,6 +8063,22 @@ export class DashboardWebviewPanel {
             <span style="margin-left:auto;font-size:11px;color:var(--accent-cyan, #00bcd4);">Click to view</span>
           </summary>
           <div class="subagent-body" style="padding:12px 18px;border-top:1px dashed var(--border-color);background:var(--bg-primary);font-size:13px;line-height:1.6;">
+            <div class="markdown-content">
+              ${renderedContent}
+            </div>
+          </div>
+        </details>
+      `;
+    } else if (msg.type === 'SYSTEM_MESSAGE' || msg.source === 'SYSTEM') {
+      const renderedContent = msg.content ? MarkdownRenderer.render(msg.content) : '<em>No system event content.</em>';
+      return `
+        <details class="system-event-banner is-internal-step" data-step="${msg.index}" style="margin:8px 0;border:1px dashed var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);overflow:hidden;">
+          <summary style="display:flex;align-items:center;gap:8px;padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;color:var(--text-secondary);user-select:none;" title="Click to view system event details">
+            <span>⚙️</span>
+            <span><b>System Event #${msg.index}</b></span>
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted);">Click to view</span>
+          </summary>
+          <div class="system-event-body" style="padding:12px 18px;border-top:1px dashed var(--border-color);background:var(--bg-primary);font-size:13px;line-height:1.6;">
             <div class="markdown-content">
               ${renderedContent}
             </div>

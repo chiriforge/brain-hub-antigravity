@@ -4,39 +4,30 @@ const { MarkdownRenderer } = require('../out/services/MarkdownRenderer');
 
 const dash = fs.readFileSync('src/views/DashboardWebviewPanel.ts', 'utf8');
 const chat = fs.readFileSync('src/views/ChatWebviewPanel.ts', 'utf8');
+const headerHelper = fs.readFileSync('src/views/HeaderLayoutHelper.ts', 'utf8');
 const tree = fs.readFileSync('src/providers/ChatHistoryTreeProvider.ts', 'utf8');
 const md = fs.readFileSync('src/services/MarkdownRenderer.ts', 'utf8');
 
 console.log('Verifying all user requirements and regressions...');
 
-// 1. Check message count format: 💬5 (no space, no msgs suffix)
-assert(chat.includes('💬${messages.filter'), 'Chat: 💬${count} format missing');
-assert(!chat.includes('💬 ${messages.filter'), 'Chat: Old space after 💬 still present');
-assert(!chat.includes('} msgs</span>'), 'Chat: Old "msgs" suffix still present');
-
-assert(dash.includes('💬${userPromptTotal}'), 'Dashboard: 💬${userPromptTotal} format missing');
-assert(!dash.includes('💬 ${userPromptTotal}'), 'Dashboard: Old space after 💬 still present');
-assert(!dash.includes('} msgs</span>'), 'Dashboard: Old "msgs" suffix still present');
+// 1. Check message count format: 💬5 / 🧵5 (no space, no msgs suffix)
+assert(dash.includes('HeaderLayoutHelper.renderHeaderMetaHtml'), 'Dashboard must use HeaderLayoutHelper.renderHeaderMetaHtml');
+assert(chat.includes('HeaderLayoutHelper.renderHeaderMetaHtml'), 'Chat must use HeaderLayoutHelper.renderHeaderMetaHtml');
+assert(headerHelper.includes('💬${p.userPromptTotal}') && headerHelper.includes('🧵${p.userPromptTotal}'), 'HeaderLayoutHelper: merged 💬/🧵${userPromptTotal} format missing');
+assert(!headerHelper.includes('} msgs</span>'), 'HeaderLayoutHelper: Old "msgs" suffix must not be present');
 
 assert(tree.includes('💬${session.messageCount}'), 'TreeProvider: 💬${session.messageCount} format missing');
 console.log('✓ Requirement 1: "💬 5 msgs" -> "💬5" (no space, no msgs suffix) verified!');
 
 // 2. Check step count format: 🤖188 (no space, robot emoji)
-assert(chat.includes('🤖${maxStepIndex}'), 'Chat: 🤖${maxStepIndex} format missing');
+assert(headerHelper.includes('🤖${p.maxStepIndex}'), 'HeaderLayoutHelper: 🤖${maxStepIndex} format missing');
 assert(!chat.includes('⚡ ${maxStepIndex}'), 'Chat: Old ⚡ ${maxStepIndex} still present');
-
-assert(dash.includes('🤖${maxStepIndex}'), 'Dashboard: 🤖${maxStepIndex} format missing');
 assert(!dash.includes('⚡ ${maxStepIndex}'), 'Dashboard: Old ⚡ ${maxStepIndex} still present');
 console.log('✓ Requirement 2: "⚡ 188" -> "🤖188" (no space, robot emoji) verified!');
 
-// 3. Check pill badge logic (artifact = purple badge, thread = green 🧵 thread)
-assert(chat.includes('title="Connected Conversation Thread (Multi-Session Chain)"'), 'Chat: thread badge logic missing');
-assert(chat.includes('meta-badge purple'), 'Chat: artifact badge logic missing');
-assert(chat.includes('${threadBadge}${artifactBadge}'), 'Chat: combined typeBadgeHtml missing');
-
-assert(dash.includes('title="Connected Conversation Thread (Multi-Session Chain)"'), 'Dashboard: thread badge logic missing');
-assert(dash.includes('meta-badge purple'), 'Dashboard: artifact badge logic missing');
-assert(dash.includes('${threadBadge}${artifactBadge}'), 'Dashboard: combined typeBadgeDetail missing');
+// 3. Check pill badge logic (artifact = purple badge, thread = green 🧵)
+assert(headerHelper.includes('Connected Conversation Thread (Multi-Session Chain)'), 'HeaderLayoutHelper: thread badge logic missing');
+assert(headerHelper.includes('meta-badge purple'), 'HeaderLayoutHelper: artifact badge logic missing');
 
 assert(tree.includes('const typeIconStr = `${threadPrefix}${artifactPrefix}`;'), 'TreeProvider: 4-case typeIconStr missing');
 console.log('✓ Requirement 3: 4-case pill icon logic verified!');
@@ -44,9 +35,8 @@ console.log('✓ Requirement 3: 4-case pill icon logic verified!');
 // 4. Check Live pill clipping fix
 assert(chat.includes('transform-origin: left center;'), 'Chat: transform-origin: left center missing in .live-badge');
 assert(dash.includes('transform-origin: left center;'), 'Dashboard: transform-origin: left center missing in .live-badge');
-assert(chat.includes('overflow: visible;'), 'Chat: overflow: visible missing in .header-meta');
-assert(dash.includes('overflow: visible;'), 'Dashboard: overflow: visible missing in .header-meta');
-console.log('✓ Requirement 4: Live pill clipping fix (transform-origin & overflow) verified!');
+assert(headerHelper.includes('flex-wrap: nowrap !important;'), 'HeaderLayoutHelper: single-line .header-meta rule missing');
+console.log('✓ Requirement 4: Live pill & single-line header-meta styling verified!');
 
 // 5. Check no split screen
 assert(!dash.includes('markdown.showPreviewToSide'), 'showPreviewToSide still in DashboardWebviewPanel');

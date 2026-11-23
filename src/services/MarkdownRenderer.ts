@@ -339,13 +339,20 @@ export class MarkdownRenderer {
             if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) {
               return `<span class="color-chip-badge" data-color="${trimmed}" title="Color: ${trimmed} (Click to copy)"><span class="color-swatch" style="background-color: ${trimmed};"></span><span class="color-hex">${trimmed}</span></span>`;
             }
-            return `<code class="inline-code">${MarkdownRenderer.escapeHtml(text)}</code>`;
+            const lengthClass = trimmed.length <= 20 ? 'inline-code-short' : 'inline-code-long';
+            return `<code class="inline-code ${lengthClass}">${MarkdownRenderer.escapeHtml(text)}</code>`;
           },
           image({ href, title, text }: { href: string; title?: string | null; text: string }) {
             return MarkdownRenderer.renderImage(href, title, text);
           },
           link({ href, title, text }: { href: string; title?: string | null; text: string }) {
             const cleanHref = (href || '').trim();
+            const convMatch = cleanHref.match(/^conversation:\/\/([0-9a-f-]{36})/i);
+            if (convMatch) {
+              const convId = convMatch[1].toLowerCase();
+              const hoverTitle = title || `Open executor conversation (${convId})`;
+              return `<a href="javascript:void(0)" class="markdown-link conversation-link" data-conversation-id="${convId}" title="${MarkdownRenderer.escapeHtml(hoverTitle)}">${text}</a>`;
+            }
             const isFile =
               cleanHref.length > 0 &&
               cleanHref !== '#' &&
@@ -950,6 +957,89 @@ export class MarkdownRenderer {
     return result.join('\n');
   }
 
+  /**
+   * Converts raw `<summary>...</summary>` tags outside `<details>` blocks and code spans/blocks
+   * into neutral `<div class="markdown-summary-block">...</div>` containers so compaction
+   * checkpoint summaries render visibly without colliding with `<details>` disclosure rules.
+   */
+  public static preprocessUnpairedSummaryTags(markdown: string): string {
+    if (!markdown || !/<\/?summary\b/i.test(markdown)) {
+      return markdown || '';
+    }
+
+    const lines = markdown.split(/\r?\n/);
+    const result: string[] = [];
+    let inCodeBlock = false;
+    let detailsDepth = 0;
+    let unpairedSummaryDepth = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+        inCodeBlock = !inCodeBlock;
+        result.push(line);
+        continue;
+      }
+
+      if (inCodeBlock) {
+        result.push(line);
+        continue;
+      }
+
+      const inlineCodeMasks: string[] = [];
+      let processed = line.replace(/`[^`\r\n]+`/g, (match) => {
+        const idx = inlineCodeMasks.length;
+        inlineCodeMasks.push(match);
+        return `___SUMMARY_CODE_MASK_${idx}___`;
+      });
+
+      processed = processed.replace(/<\/?(?:details|summary)\b[^>]*>/gi, (tag) => {
+        if (/^<details\b/i.test(tag)) {
+          if (!/\/>$/.test(tag)) {
+            detailsDepth++;
+          }
+          return tag;
+        }
+        if (/^<\/details\b/i.test(tag)) {
+          if (detailsDepth > 0) {
+            detailsDepth--;
+          }
+          return tag;
+        }
+        if (/^<summary\b/i.test(tag)) {
+          if (detailsDepth > 0) {
+            return tag;
+          }
+          unpairedSummaryDepth++;
+          return '\n<div class="markdown-summary-block">\n';
+        }
+        // </summary>
+        if (detailsDepth > 0) {
+          return tag;
+        }
+        if (unpairedSummaryDepth > 0) {
+          unpairedSummaryDepth--;
+          return '\n</div>\n';
+        }
+        return '';
+      });
+
+      for (let k = inlineCodeMasks.length - 1; k >= 0; k--) {
+        processed = processed.replace(`___SUMMARY_CODE_MASK_${k}___`, inlineCodeMasks[k]);
+      }
+
+      result.push(processed);
+    }
+
+    if (unpairedSummaryDepth > 0) {
+      result.push('\n' + '</div>\n'.repeat(unpairedSummaryDepth));
+    }
+
+    return result.join('\n');
+  }
+
   private static preprocessFileUrls(markdown: string): string {
     if (!markdown) {
       return '';
@@ -1026,15 +1116,19 @@ export class MarkdownRenderer {
       return '';
     }
 
-    if (sessionPath) {
+    const prevSessionPath = MarkdownRenderer.currentSessionPath;
+    if (sessionPath !== undefined) {
       MarkdownRenderer.setSessionPath(sessionPath);
     }
 
     MarkdownRenderer.initialize();
 
     try {
+      // Convert unpaired <summary>...</summary> wrappers into neutral containers before parsing
+      const summaryProcessed = MarkdownRenderer.preprocessUnpairedSummaryTags(markdown);
+
       // Pre-process list boundaries so unindented chat lines don't get stuck inside <li>
-      const listProcessed = MarkdownRenderer.preprocessMarkdownLists(markdown);
+      const listProcessed = MarkdownRenderer.preprocessMarkdownLists(summaryProcessed);
 
       // Pre-process math expressions so LaTeX control characters are safely escaped
       const mathProcessed = MarkdownRenderer.preprocessMath(listProcessed);
@@ -1091,11 +1185,47 @@ export class MarkdownRenderer {
         return `<div class="chat-image-missing" title="Image not found: ${MarkdownRenderer.escapeHtml(src)}"><span class="missing-icon">🖼️</span><span class="missing-text">${MarkdownRenderer.escapeHtml(filename)}</span><span class="missing-tag">(Not found)</span></div>`;
       });
 
+      html = MarkdownRenderer.wrapTablesInContainer(html);
+
       return MarkdownRenderer.renderColorChipsInText(html);
     } catch (err) {
       console.error('Marked rendering error:', err);
       return MarkdownRenderer.escapeHtml(markdown).replace(/\n/g, '<br />');
+    } finally {
+      if (sessionPath !== undefined) {
+        MarkdownRenderer.setSessionPath(prevSessionPath);
+      }
     }
+  }
+
+  public static wrapTablesInContainer(html: string): string {
+    if (!html) return '';
+
+    return html.replace(
+      /(<pre\b[\s\S]*?<\/pre>)|(<code\b[\s\S]*?<\/code>)|(<div\b[^>]*class=["'][^"']*\btable-container\b[^"']*["'][^>]*>\s*<table\b[\s\S]*?<\/table>\s*<\/div>)|(<table(\b[^>]*)>([\s\S]*?)<\/table>)/gi,
+      (match, preBlock, codeBlock, wrappedTable, tableMatch, rawAttrs, tableBody) => {
+        if (preBlock || codeBlock || wrappedTable) {
+          return match;
+        }
+        if (!tableMatch) {
+          return match;
+        }
+        const attrs = rawAttrs || '';
+        let updatedAttrs = attrs;
+        if (/\bclass\s*=\s*["']([^"']*)["']/i.test(attrs)) {
+          updatedAttrs = attrs.replace(/\bclass\s*=\s*(["'])([^"']*)\1/i, (classMatch: string, quote: string, classList: string) => {
+            if (/\bmarkdown-table\b/.test(classList)) {
+              return classMatch;
+            }
+            const trimmedClasses = classList.trim();
+            return `class=${quote}${trimmedClasses ? `${trimmedClasses} markdown-table` : 'markdown-table'}${quote}`;
+          });
+        } else {
+          updatedAttrs = ` class="markdown-table"${attrs}`;
+        }
+        return `<div class="table-container"><table${updatedAttrs}>${tableBody}</table></div>`;
+      }
+    );
   }
 
   public static renderColorChipsInText(html: string): string {

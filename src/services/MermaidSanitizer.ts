@@ -425,7 +425,7 @@ export class MermaidSanitizer {
       // Circle ((...))
       processed = processed.replace(new RegExp('(^|[\\s;,&|>-])(' + nodeIdPat + ')\\s*\\(\\(([^"\\r\\n]+?)\\)\\)', 'g'), (m, p, id, l) => p + mask(`${id}(("${l.replace(/"/g, "'").trim()}"))`) );
       // Parallelogram [/ ... /]
-      processed = processed.replace(new RegExp('(^|[\\s;,&|>-])(' + nodeIdPat + ')\\s*\\[\\/([^"\\r\\n]+?)\\/\]', 'g'), (m, p, id, l) => p + mask(`${id}[/"${l.replace(/"/g, "'").trim()}"/]`) );
+      processed = processed.replace(new RegExp('(^|[\\s;,&|>-])(' + nodeIdPat + ')\\s*\\[\\/([^"\\r\\n]+?)\\/\\]', 'g'), (m, p, id, l) => p + mask(`${id}[/"${l.replace(/"/g, "'").trim()}"/]`) );
       // Parallelogram alt [\ ... \]
       processed = processed.replace(new RegExp('(^|[\\s;,&|>-])(' + nodeIdPat + ')\\s*\\[\\\\([^"\\r\\n]+?)\\\\\\]', 'g'), (m, p, id, l) => p + mask(`${id}[\\"${l.replace(/"/g, "'").trim()}"\\]`) );
       // Asymmetric > ... ]

@@ -233,8 +233,8 @@ try {
   assert(chatHtml.includes('id="tabCountScratch"'), 'ChatWebview must include tabCountScratch badge');
 
   // Verify header trigger button
-  assert(chatHtml.includes('primary-artifact-btn'), 'ChatWebview header must include .primary-artifact-btn');
-  assert(chatHtml.includes(`All Artifacts (${artifacts.length})`), 'ChatWebview button must display correct total artifact count');
+  assert(chatHtml.includes('onclick="openArtifactsModal()"'), 'ChatWebview header must include openArtifactsModal() trigger');
+  assert(chatHtml.includes(`📦${artifacts.length}`), 'ChatWebview button must display correct total artifact count');
 
   // Verify client controller scripts
   assert(chatHtml.includes('function openArtifactsModal('), 'ChatWebview must contain openArtifactsModal');
@@ -268,8 +268,8 @@ try {
 
   assert(dashboardReaderHtml.includes('id="artifactsDataHolder"'), 'Dashboard reader must include #artifactsDataHolder element');
   assert(dashboardReaderHtml.includes('data-artifacts='), 'Dashboard reader must carry base64 serialized artifacts data');
-  assert(dashboardReaderHtml.includes('primary-artifact-btn'), 'Dashboard reader header must include .primary-artifact-btn');
-  assert(dashboardReaderHtml.includes(`All Artifacts (${artifacts.length})`), 'Dashboard button must display total artifact count');
+  assert(dashboardReaderHtml.includes('onclick="openArtifactsModal()"'), 'Dashboard reader header must include openArtifactsModal() trigger');
+  assert(dashboardReaderHtml.includes(`📦${artifacts.length}`), 'Dashboard button must display total artifact count');
 
   const fullDashboardHtml = dashboardInstance['generateDashboardHtml'](
     [sampleSession],
@@ -293,8 +293,8 @@ try {
   assert(navItemHtml.includes('type-chat') && navItemHtml.includes('💬 Chat'), 'Side panel nav item must display 💬 Chat for single session');
   assert(navItemHtml.includes('type-artifact') && navItemHtml.includes('📦'), 'Side panel nav item must display 📦 artifact badge');
 
-  assert(dashboardReaderHtml.includes('Single Chat'), 'Reader header must display Single Chat badge');
-  assert(dashboardReaderHtml.includes('Artifacts</span>'), 'Reader header must display Artifacts badge');
+  assert(dashboardReaderHtml.includes('💬1') && dashboardReaderHtml.includes('Single Standalone Conversation'), 'Reader header must display compact Single Chat icon+count badge with descriptive tooltip');
+  assert(dashboardReaderHtml.includes(`📦${artifacts.length}`) && dashboardReaderHtml.includes('artifacts generated in this session'), 'Reader header must display compact Artifacts icon+count badge');
 
   const { SessionTreeItem } = require('../out/providers/ChatHistoryTreeProvider');
   const treeItem = new SessionTreeItem(sampleSession);

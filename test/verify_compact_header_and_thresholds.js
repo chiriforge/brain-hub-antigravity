@@ -297,8 +297,8 @@ try {
   };
 
   // Extract toggleHeaderCollapse & toggleCollapsedTokenChart from Dashboard script
-  const scriptMatches = [...fullDashHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-  const mainDashScript = scriptMatches.map((m) => m[1]).find((s) => s.includes('function toggleHeaderCollapse'));
+  const scriptBodies = fullDashHtml.split('<script>').slice(1).map((part) => part.split('</script>')[0]);
+  const mainDashScript = scriptBodies.find((s) => s.includes('function toggleHeaderCollapse'));
   assert(mainDashScript, 'Dashboard HTML must define toggleHeaderCollapse()');
   assert(mainDashScript.includes('function toggleCollapsedTokenChart'), 'Dashboard HTML must define toggleCollapsedTokenChart()');
   assert(mainDashScript.includes('function updateHeaderScrollCollapse'), 'Dashboard HTML must define updateHeaderScrollCollapse()');

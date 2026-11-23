@@ -542,7 +542,8 @@ export class TokenUsageMonitor {
         : '';
     const text = `${icon} Ctx: ${ctxCompact} (${cachePct}% cache) | Out: ${outCompact} | #${stepIdx}${cacheMissSuffix}${multiExecSuffix}`;
 
-    const sessionTitle = (session?.title || 'Active Session').replace(/\|/g, '\\|');
+    const escapeMdPipes = (val: string): string => val.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+    const sessionTitle = escapeMdPipes(session?.title || 'Active Session');
     const sessionIdShort = session?.id ? session.id.substring(0, 8) : 'unknown';
     const wsDisplay = session?.workspaceName || (session?.workspacePath ? path.basename(session.workspacePath) : 'All Workspaces');
 
@@ -592,7 +593,7 @@ export class TokenUsageMonitor {
       if (childExecutors && childExecutors.length > 0) {
         lines.push(``, `**Subagents:**`);
         for (const ch of childExecutors.slice(0, 8)) {
-          const chRole = (ch.executorRole || ch.title || ch.id.substring(0, 8)).replace(/\|/g, '\\|');
+          const chRole = escapeMdPipes(ch.executorRole || ch.title || ch.id.substring(0, 8));
           const chCum = SessionScanner.formatCompactTokens(ch.tokenUsage?.cumulativeTokens || 0);
           const chCost = TokenUsageMonitor.formatUsdCost(
             TokenUsageMonitor.calculateTokenCost(ch.tokenUsage, pricingConfig).totalCost

@@ -306,11 +306,39 @@ function createInteractiveSimContext(initialBodyHtml) {
     createElement: (tag) => new SimElement(tag)
   };
 
+  function stripTagBlock(html, tagName) {
+    const openPrefix = `<${tagName}`;
+    const closeTag = `</${tagName}`;
+    let out = String(html || '');
+    let searchFrom = 0;
+    while (true) {
+      const lower = out.toLowerCase();
+      const start = lower.indexOf(openPrefix, searchFrom);
+      if (start === -1) break;
+      const nextCh = lower[start + openPrefix.length];
+      if (nextCh && nextCh !== '>' && !/\s/.test(nextCh)) {
+        searchFrom = start + openPrefix.length;
+        continue;
+      }
+      const closeStart = lower.indexOf(closeTag, start);
+      if (closeStart === -1) {
+        out = out.slice(0, start);
+        break;
+      }
+      const closeEnd = lower.indexOf('>', closeStart);
+      if (closeEnd === -1) {
+        out = out.slice(0, start);
+        break;
+      }
+      out = out.slice(0, start) + out.slice(closeEnd + 1);
+      searchFrom = 0;
+    }
+    return out;
+  }
+
   class SimDOMParser {
     parseFromString(htmlStr) {
-      const sanitizedHtml = (htmlStr || '')
-        .replace(/<script\b[\s\S]*?<\/script>/gi, '')
-        .replace(/<style\b[\s\S]*?<\/style>/gi, '');
+      const sanitizedHtml = stripTagBlock(stripTagBlock(htmlStr || '', 'script'), 'style');
       const parsedDocRoot = new SimElement('html');
       parsedDocRoot.innerHTML = sanitizedHtml;
       return {
@@ -376,12 +404,34 @@ function createInteractiveSimContext(initialBodyHtml) {
   return { context: vm.createContext(sandbox), listeners, doc };
 }
 
+function extractScriptBlocks(html) {
+  const blocks = [];
+  const src = String(html || '');
+  const lower = src.toLowerCase();
+  let pos = 0;
+  while (pos < src.length) {
+    const start = lower.indexOf('<script', pos);
+    if (start === -1) break;
+    const nextCh = lower[start + 7];
+    if (nextCh && nextCh !== '>' && !/\s/.test(nextCh)) {
+      pos = start + 7;
+      continue;
+    }
+    const openEnd = src.indexOf('>', start);
+    if (openEnd === -1) break;
+    const closeStart = lower.indexOf('</script', openEnd + 1);
+    if (closeStart === -1) break;
+    const closeEnd = src.indexOf('>', closeStart);
+    if (closeEnd === -1) break;
+    blocks.push(src.slice(openEnd + 1, closeStart));
+    pos = closeEnd + 1;
+  }
+  return blocks;
+}
+
 function runScriptsInSim(fullHtml, bodyHtml) {
   const { context, listeners, doc } = createInteractiveSimContext(bodyHtml);
-  const scriptRegex = /<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
-  let m;
-  while ((m = scriptRegex.exec(fullHtml)) !== null) {
-    const code = m[1];
+  for (const code of extractScriptBlocks(fullHtml)) {
     if (!code.trim()) continue;
     const script = new vm.Script(code);
     script.runInContext(context);

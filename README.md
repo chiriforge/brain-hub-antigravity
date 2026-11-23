@@ -33,10 +33,11 @@ An extension for VS Code and Google DeepMind Antigravity IDE to browse, search, 
 
 ---
 
-## What's New in v0.5.3
-- **Mermaid Diagram Rendering**: Integrated `beautiful-mermaid` orthogonal SVG layout, smart multi-line word wrapping, and interactive fullscreen pan/zoom canvas.
-- **LaTeX / KaTeX Rendering**: Fixed inline math vs. currency/shell-variable disambiguation, syntax pre-sanitization, and fallback badges.
-- **Multi-IDE Concurrency, Crash Recovery & Git Auto-Sync**: Fixed webview handshake freezes, orphaned lock cleanup, atomic cache writes, and multi-machine Git sync conflicts.
+## What's New in v0.5.4
+- **Token Usage, Cost Telemetry & Compact Header**: Added near real-time token/cost monitoring in the Status Bar HUD and 3-tier webview charts, per-model pricing and context thresholds (`brainHub.modelPricing`), and a compact 13px header with scroll auto-collapse.
+- **Multi-Executor Live Progress & Subagent Tree**: Added a 3-layer progress viewer for `/boost`, `/teamwork`, `/swarm`, and `invoke_subagent` sessions with collapsible Sidebar/Nav sub-trees, Executor Switcher, Execution Progress Matrix, Swarm Board, and rolled-up `treeTokenUsage`.
+- **Workspace-Aware Auto-Load & Split-Session Merging**: Added a 4-layer workspace session auto-load pipeline, multi-directory split-session fragment merging across brain roots, scroll-preserving live updates, and recursive NTFS watching.
+- **Cross-Machine Attribution, Git-Aware Sync & Rendering Fixes**: Added `.brainhub_meta.json` machine attribution, dynamic branch & `.git`-aware brain directory sync, plus Markdown table wrapping, checkpoint summary rendering, and export sanitization fixes.
 
 *Full release history: [CHANGELOG.md](./CHANGELOG.md)*
 
@@ -113,7 +114,7 @@ code --install-extension chiriforge.brain-hub-antigravity
 
 Or install via terminal:
 ```bash
-code --install-extension brain-hub-antigravity-0.5.3.vsix
+code --install-extension brain-hub-antigravity-0.5.4.vsix
 ```
 
 ### Build from Source

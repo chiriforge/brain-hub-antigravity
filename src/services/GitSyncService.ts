@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import { SessionScanner } from './SessionScanner';
@@ -16,11 +17,14 @@ export interface GitStatusInfo {
 export class GitSyncService {
   private static instance: GitSyncService;
   private isSyncing: boolean = false;
+  private pullSuppressionUntil: number = 0;
   private autoSyncTimer?: NodeJS.Timeout;
   private _onDidSync: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
   public readonly onDidSync: vscode.Event<void> = this._onDidSync.event;
 
-  private constructor() {}
+  private constructor() {
+    SessionScanner.getInstance().setPullSuppressionChecker(() => this.isPullSuppressionActive());
+  }
 
   public static getInstance(): GitSyncService {
     if (!GitSyncService.instance) {
@@ -29,12 +33,88 @@ export class GitSyncService {
     return GitSyncService.instance;
   }
 
-  private getBrainDir(): string {
-    return SessionScanner.getInstance().getBrainDirectory();
+  public getBrainDir(): string {
+    const configPath = vscode.workspace.getConfiguration('brainHub').get<string>('brainPath');
+    if (configPath && configPath.trim().length > 0) {
+      return path.resolve(configPath.trim());
+    }
+    const home = os.homedir();
+    const modernDir = path.join(home, '.gemini', 'antigravity', 'brain');
+    const legacyDir = path.join(home, '.gemini', 'antigravity-ide', 'brain');
+    const candidates = [
+      modernDir,
+      legacyDir,
+      path.join(home, '.gemini', 'antigravity-2.0', 'brain'),
+      path.join(home, '.gemini', 'antigravity-app', 'brain'),
+      path.join(home, '.gemini', 'antigravity-cli', 'brain'),
+      path.join(home, '.gemini', 'agy', 'brain')
+    ];
+    for (const dir of candidates) {
+      if (fs.existsSync(path.join(dir, '.git'))) {
+        return dir;
+      }
+    }
+    if (fs.existsSync(modernDir)) {
+      return modernDir;
+    }
+    if (fs.existsSync(legacyDir)) {
+      return legacyDir;
+    }
+    return modernDir;
   }
 
-  private execGit(command: string, cwd?: string): Promise<{ stdout: string; stderr: string; code: number }> {
+  public isPullSuppressionActive(): boolean {
+    if (this.isSyncing || Date.now() < this.pullSuppressionUntil) {
+      return true;
+    }
+    const state = this.readSyncState();
+    const now = Date.now();
+    if (state.inProgress) {
+      return true;
+    }
+    if (state.lastSyncTimestamp > 0 && now - state.lastSyncTimestamp < 5000) {
+      return true;
+    }
+    return false;
+  }
+
+  private parseGitArgs(command: string): string[] {
+    const args: string[] = [];
+    let current = '';
+    let inQuotes: '"' | "'" | null = null;
+    for (let i = 0; i < command.length; i++) {
+      const ch = command[i];
+      if (inQuotes) {
+        if (ch === inQuotes) {
+          inQuotes = null;
+        } else {
+          current += ch;
+        }
+      } else if (ch === '"' || ch === "'") {
+        inQuotes = ch;
+      } else if (/\s/.test(ch)) {
+        if (current.length > 0) {
+          args.push(current);
+          current = '';
+        }
+      } else {
+        current += ch;
+      }
+    }
+    if (current.length > 0) {
+      args.push(current);
+    }
+    return args;
+  }
+
+  private execGit(
+    commandOrArgs: string | string[],
+    cwd?: string,
+    options?: { trimOutput?: boolean }
+  ): Promise<{ stdout: string; stderr: string; code: number }> {
     const targetCwd = cwd || this.getBrainDir();
+    const args = Array.isArray(commandOrArgs) ? commandOrArgs : this.parseGitArgs(commandOrArgs);
+    const trimOutput = options?.trimOutput !== false;
     return new Promise((resolve) => {
       const gitEnv = {
         ...process.env,
@@ -42,8 +122,9 @@ export class GitSyncService {
         GIT_ASKPASS: '',
         GIT_PAGER: 'cat'
       };
-      cp.exec(
-        `git ${command}`,
+      cp.execFile(
+        'git',
+        args,
         {
           cwd: targetCwd,
           encoding: 'utf8',
@@ -53,10 +134,15 @@ export class GitSyncService {
           env: gitEnv
         },
         (error, stdout, stderr) => {
+          const exitCode = error
+            ? typeof (error as any).code === 'number'
+              ? (error as any).code
+              : 1
+            : 0;
           resolve({
-            stdout: stdout ? stdout.trim() : '',
+            stdout: stdout ? (trimOutput ? stdout.trim() : stdout) : '',
             stderr: stderr ? stderr.trim() : '',
-            code: error ? (error.code ?? 1) : 0
+            code: exitCode
           });
         }
       );
@@ -87,23 +173,167 @@ export class GitSyncService {
     const gitDir = path.join(brainDir, '.git');
     if (!fs.existsSync(gitDir)) return false;
 
+    let recovered = false;
     const rebaseMergeDir = path.join(gitDir, 'rebase-merge');
     const rebaseApplyDir = path.join(gitDir, 'rebase-apply');
+    const mergeHeadFile = path.join(gitDir, 'MERGE_HEAD');
 
     if (fs.existsSync(rebaseMergeDir) || fs.existsSync(rebaseApplyDir)) {
       console.log('Detected zombie or unfinished git rebase directory. Recovering...');
       try {
-        await this.execGit('rebase --quit');
+        await this.execGit(['rebase', '--quit']);
       } catch {}
       try {
         if (fs.existsSync(rebaseMergeDir)) fs.rmSync(rebaseMergeDir, { recursive: true, force: true });
         if (fs.existsSync(rebaseApplyDir)) fs.rmSync(rebaseApplyDir, { recursive: true, force: true });
-        return true;
+        recovered = true;
       } catch (err) {
         console.warn('Failed to prune rebase directory:', err);
       }
     }
-    return false;
+
+    if (fs.existsSync(mergeHeadFile)) {
+      console.log('Detected unfinished git merge (MERGE_HEAD). Aborting merge...');
+      try {
+        await this.execGit(['merge', '--abort']);
+      } catch {}
+      try {
+        if (fs.existsSync(mergeHeadFile)) {
+          await this.execGit(['reset', '--merge']);
+        }
+        if (fs.existsSync(mergeHeadFile)) {
+          fs.unlinkSync(mergeHeadFile);
+          const mergeMsgFile = path.join(gitDir, 'MERGE_MSG');
+          const mergeModeFile = path.join(gitDir, 'MERGE_MODE');
+          if (fs.existsSync(mergeMsgFile)) fs.unlinkSync(mergeMsgFile);
+          if (fs.existsSync(mergeModeFile)) fs.unlinkSync(mergeModeFile);
+          await this.execGit(['reset', '--hard', 'HEAD']);
+        }
+        recovered = true;
+      } catch (err) {
+        console.warn('Failed to clean up MERGE_HEAD:', err);
+      }
+    }
+
+    return recovered;
+  }
+
+  public async resolveActiveBranch(): Promise<string> {
+    const branchRes = await this.execGit(['branch', '--show-current']);
+    if (branchRes.code === 0 && branchRes.stdout) {
+      return branchRes.stdout;
+    }
+    const symRefRes = await this.execGit(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    if (symRefRes.code === 0 && symRefRes.stdout) {
+      return symRefRes.stdout.replace(/^origin\//, '').trim() || 'main';
+    }
+    const headRefRes = await this.execGit(['symbolic-ref', '--short', 'HEAD']);
+    if (headRefRes.code === 0 && headRefRes.stdout) {
+      return headRefRes.stdout.trim();
+    }
+    return 'main';
+  }
+
+  public async stampPendingSessionsBeforeSync(): Promise<void> {
+    const brainDir = this.getBrainDir();
+    if (!fs.existsSync(brainDir) || !(await this.isGitRepo())) {
+      return;
+    }
+    const statusRes = await this.execGit(
+      ['-c', 'core.quotepath=false', 'status', '--porcelain'],
+      brainDir,
+      { trimOutput: false }
+    );
+    if (statusRes.code !== 0 || !statusRes.stdout) {
+      return;
+    }
+
+    const scanner = SessionScanner.getInstance();
+    const localMachine = scanner.getLocalMachineName();
+    const candidateSessionIds = new Set<string>();
+
+    for (const line of statusRes.stdout.split(/\r?\n/)) {
+      if (!line || line.length < 4) continue;
+      const x = line[0];
+      const y = line[1];
+      if (x === 'D' || y === 'D') {
+        continue;
+      }
+      let relPath = line.slice(3).trim();
+      if (relPath.includes(' -> ')) {
+        relPath = relPath.split(' -> ').pop()!.trim();
+      }
+      relPath = relPath.replace(/^["']|["']$/g, '');
+      const firstSeg = relPath.replace(/\\/g, '/').split('/')[0];
+      if (!firstSeg || firstSeg.startsWith('.') || firstSeg === 'tempmediaStorage') {
+        continue;
+      }
+      candidateSessionIds.add(firstSeg);
+    }
+
+    for (const sessionId of candidateSessionIds) {
+      const sessionDir = path.join(brainDir, sessionId);
+      try {
+        if (!fs.existsSync(sessionDir) || !fs.statSync(sessionDir).isDirectory()) {
+          continue;
+        }
+        if (scanner.readSessionOriginMeta(sessionDir)) {
+          continue;
+        }
+        const tf = scanner.getTranscriptFilePath(sessionDir);
+        if (!tf) {
+          continue;
+        }
+        const parsed = scanner.parseTranscriptFile(tf, sessionId, true);
+        if (parsed.detectedMachine && parsed.detectedMachine.toLowerCase() !== localMachine.toLowerCase()) {
+          continue;
+        }
+        const wsMachine = scanner.extractMachineFromWorkspacePath(parsed.detectedWorkspace);
+        if (wsMachine && wsMachine.toLowerCase() !== localMachine.toLowerCase()) {
+          continue;
+        }
+        scanner.stampLocalSessionOrigin(sessionDir);
+      } catch {}
+    }
+  }
+
+  private async pullAndMergeBranch(branch: string): Promise<{ ok: boolean; error?: string }> {
+    const brainDir = this.getBrainDir();
+    const mergeHeadFile = path.join(brainDir, '.git', 'MERGE_HEAD');
+    const escapedBranch = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const missingRefRegex = new RegExp(`couldn't find remote ref ${escapedBranch}`, 'i');
+
+    let pullRes = await this.execGit(['pull', 'origin', branch, '--no-rebase', '-X', 'ours']);
+    this.pullSuppressionUntil = Date.now() + 5000;
+    if (pullRes.code === 0) {
+      return { ok: true };
+    }
+
+    const combinedErr = `${pullRes.stderr}\n${pullRes.stdout}`;
+    if (missingRefRegex.test(combinedErr)) {
+      return { ok: true };
+    }
+
+    if (fs.existsSync(mergeHeadFile)) {
+      await this.recoverZombieRebase();
+    }
+
+    pullRes = await this.execGit(['pull', 'origin', branch, '--no-rebase', '--no-edit', '--allow-unrelated-histories', '-X', 'ours']);
+    this.pullSuppressionUntil = Date.now() + 5000;
+    if (pullRes.code === 0) {
+      return { ok: true };
+    }
+
+    const retryErr = `${pullRes.stderr}\n${pullRes.stdout}`;
+    if (missingRefRegex.test(retryErr)) {
+      return { ok: true };
+    }
+
+    if (fs.existsSync(mergeHeadFile)) {
+      await this.recoverZombieRebase();
+    }
+
+    return { ok: false, error: (pullRes.stderr || pullRes.stdout || 'Git pull/merge failed').trim() };
   }
 
   public async isGitRepo(): Promise<boolean> {
@@ -124,7 +354,7 @@ export class GitSyncService {
     }
 
     try {
-      const branchRes = await this.execGit('branch --show-current');
+      const branch = await this.resolveActiveBranch();
       const remoteRes = await this.execGit('remote get-url origin');
       const statusRes = await this.execGit('status --porcelain');
 
@@ -132,7 +362,7 @@ export class GitSyncService {
 
       return {
         isRepo: true,
-        branch: branchRes.stdout || 'main',
+        branch,
         hasRemote: remoteRes.code === 0 && !!remoteRes.stdout,
         remoteUrl: remoteRes.code === 0 ? remoteRes.stdout : undefined,
         hasUncommittedChanges: lines.length > 0,
@@ -212,13 +442,25 @@ export class GitSyncService {
       }
     }
 
-    await this.execGit('branch -M main');
-
-    const remoteCheck = await this.execGit('remote get-url origin');
+    const remoteCheck = await this.execGit(['remote', 'get-url', 'origin']);
     if (remoteCheck.code === 0) {
-      await this.execGit(`remote set-url origin "${remoteUrl}"`);
+      await this.execGit(['remote', 'set-url', 'origin', remoteUrl]);
     } else {
-      await this.execGit(`remote add origin "${remoteUrl}"`);
+      await this.execGit(['remote', 'add', 'origin', remoteUrl]);
+    }
+
+    const headCheck = await this.execGit(['rev-parse', '--verify', 'HEAD']);
+    if (headCheck.code !== 0) {
+      // Unborn repository (0 commits): align HEAD with remote default branch if available
+      let targetBranch = 'main';
+      const lsRemote = await this.execGit(['ls-remote', '--symref', 'origin', 'HEAD']);
+      if (lsRemote.code === 0 && lsRemote.stdout) {
+        const refMatch = lsRemote.stdout.match(/ref:\s*refs\/heads\/([^\s]+)\s+HEAD/);
+        if (refMatch && refMatch[1]) {
+          targetBranch = refMatch[1].trim();
+        }
+      }
+      await this.execGit(['symbolic-ref', 'HEAD', `refs/heads/${targetBranch}`]);
     }
 
     vscode.window.showInformationMessage(`GitHub Remote URL set to: ${remoteUrl}`);
@@ -332,20 +574,27 @@ export class GitSyncService {
 
     try {
       await this.ensureGitIgnore();
-      await this.execGit('add .');
+      await this.stampPendingSessionsBeforeSync();
+      await this.execGit(['add', '.']);
 
       const statusCheck = await this.getStatus();
       const nowStr = new Date().toLocaleString();
       if (statusCheck.hasUncommittedChanges) {
-        await this.execGit(`commit -m "chore: auto background sync ${nowStr}"`);
+        await this.execGit(['commit', '-m', `chore: auto background sync ${nowStr}`]);
       }
 
-      let pullRes = await this.execGit('pull origin main --no-rebase -X ours');
-      if (pullRes.code !== 0) {
-        pullRes = await this.execGit('pull origin main --no-edit --allow-unrelated-histories');
+      const branch = await this.resolveActiveBranch();
+      const pullResult = await this.pullAndMergeBranch(branch);
+      if (!pullResult.ok) {
+        console.warn('Background git pull/merge failed:', pullResult.error);
+        this.writeSyncState({
+          inProgress: false,
+          lockExpiresAt: 0
+        });
+        return false;
       }
 
-      const pushRes = await this.execGit('push -u origin main');
+      const pushRes = await this.execGit(['push', '-u', 'origin', branch]);
       if (pushRes.code !== 0) {
         console.warn('Background git push failed:', pushRes.stderr || pushRes.stdout);
         this.writeSyncState({
@@ -412,26 +661,32 @@ export class GitSyncService {
       async (progress) => {
         try {
           await this.ensureGitIgnore();
+          await this.stampPendingSessionsBeforeSync();
 
           progress.report({ message: 'Staging new and updated sessions...' });
-          await this.execGit('add .');
+          await this.execGit(['add', '.']);
 
           const statusCheck = await this.getStatus();
           const nowStr = new Date().toLocaleString();
           if (statusCheck.hasUncommittedChanges) {
             progress.report({ message: 'Committing local history...' });
-            await this.execGit(`commit -m "chore: sync antigravity sessions ${nowStr}"`);
+            await this.execGit(['commit', '-m', `chore: sync antigravity sessions ${nowStr}`]);
           }
 
           progress.report({ message: 'Merging remote sessions from other machines...' });
-          let pullRes = await this.execGit('pull origin main --no-rebase -X ours');
-
-          if (pullRes.code !== 0) {
-            pullRes = await this.execGit('pull origin main --no-edit --allow-unrelated-histories');
+          const branch = await this.resolveActiveBranch();
+          const pullResult = await this.pullAndMergeBranch(branch);
+          if (!pullResult.ok) {
+            vscode.window.showErrorMessage(`Git pull/merge failed: ${pullResult.error}`);
+            this.writeSyncState({
+              inProgress: false,
+              lockExpiresAt: 0
+            });
+            return;
           }
 
           progress.report({ message: 'Pushing merged history to GitHub...' });
-          const pushRes = await this.execGit('push -u origin main');
+          const pushRes = await this.execGit(['push', '-u', 'origin', branch]);
 
           if (pushRes.code !== 0) {
             vscode.window.showErrorMessage(`Git push failed: ${pushRes.stderr || pushRes.stdout}`);

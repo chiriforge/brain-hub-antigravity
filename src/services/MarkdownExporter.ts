@@ -252,8 +252,9 @@ export class MarkdownExporter {
         }
 
         // Main AI Response Content
-        if (msg.content && msg.content.trim()) {
-          lines.push(clean(msg.content));
+        const mainAiContent = msg.cleanContent !== undefined ? msg.cleanContent : msg.content;
+        if (mainAiContent && mainAiContent.trim()) {
+          lines.push(clean(mainAiContent));
           lines.push('');
         }
       } else if (msg.type === 'CHECKPOINT') {

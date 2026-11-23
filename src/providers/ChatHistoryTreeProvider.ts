@@ -2,6 +2,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { ChatSession, TimeGroupKey } from '../models/types';
 import { SessionScanner } from '../services/SessionScanner';
+import { TokenUsageMonitor } from '../services/TokenUsageMonitor';
+import { ExecutorLayoutHelper } from '../views/ExecutorLayoutHelper';
 
 export type TreeItemType = TimeGroupTreeItem | SessionTreeItem | LoadingTreeItem;
 
@@ -14,6 +16,14 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
   private isWorkspaceFiltered: boolean = false;
   private cachedSessions: ChatSession[] = [];
   private isScanning: boolean = false;
+
+  public get allSessions(): ChatSession[] {
+    return this.cachedSessions;
+  }
+
+  public set allSessions(sessions: ChatSession[]) {
+    this.cachedSessions = Array.isArray(sessions) ? sessions : [];
+  }
 
   constructor() {
     const defaultFilter = vscode.workspace
@@ -92,14 +102,31 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
     }
 
     if (element instanceof TimeGroupTreeItem) {
-      return element.sessions.map((session) => new SessionTreeItem(session));
+      return element.sessions.map((session) => new SessionTreeItem(session, this.cachedSessions));
+    }
+
+    if (element instanceof SessionTreeItem) {
+      const parentIdLower = element.session.id.toLowerCase();
+      const refIds = new Set((element.session.executorRefs || []).map((r) => r.conversationId.toLowerCase()));
+      const children = this.cachedSessions.filter(
+        (s) =>
+          s.id.toLowerCase() !== parentIdLower &&
+          !element.ancestorIds.has(s.id.toLowerCase()) &&
+          ((s.executorParentId && s.executorParentId.toLowerCase() === parentIdLower) ||
+            (!s.executorParentId && refIds.has(s.id.toLowerCase())))
+      );
+      return children.map((child) => {
+        const nextAncestors = new Set(element.ancestorIds);
+        nextAncestors.add(child.id.toLowerCase());
+        return new SessionTreeItem(child, this.cachedSessions, true, nextAncestors);
+      });
     }
 
     return [];
   }
 
   private buildRootGroups(rawSessions: ChatSession[]): TimeGroupTreeItem[] {
-    let sessions = rawSessions;
+    let sessions = rawSessions.filter((s) => !s.executorParentId);
 
     if (this.isWorkspaceFiltered) {
       sessions = this.filterSessionsByWorkspace(sessions);
@@ -199,30 +226,9 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
       return sessions;
     }
 
-    const currentWorkspacePaths = workspaceFolders.map((f) => f.uri.fsPath.toLowerCase());
-    const currentWorkspaceNames = workspaceFolders.map((f) => f.name.toLowerCase());
-
-    return sessions.filter((session) => {
-      if (session.workspacePath) {
-        const lowerWsPath = session.workspacePath.toLowerCase();
-        for (const cPath of currentWorkspacePaths) {
-          if (lowerWsPath.includes(cPath) || cPath.includes(lowerWsPath)) {
-            return true;
-          }
-        }
-      }
-
-      if (session.workspaceName) {
-        const lowerName = session.workspaceName.toLowerCase();
-        for (const cName of currentWorkspaceNames) {
-          if (lowerName === cName) {
-            return true;
-          }
-        }
-      }
-
-      return false;
-    });
+    return sessions.filter((session) =>
+      workspaceFolders.some((f) => SessionScanner.matchSessionToWorkspaceFolder(session, f.uri.fsPath, f.name) !== null)
+    );
   }
 
   private groupSessionsByTime(sessions: ChatSession[]): Record<TimeGroupKey, ChatSession[]> {
@@ -238,8 +244,13 @@ export class ChatHistoryTreeProvider implements vscode.TreeDataProvider<TreeItem
       older: []
     };
 
+    const sortBy = vscode.workspace.getConfiguration('brainHub').get<string>('sessionSortBy', 'lastModified');
+
     for (const session of sessions) {
-      const time = (session.createdAt || session.lastModified).getTime();
+      const targetDate = sortBy === 'createdAt'
+        ? (session.createdAt || session.lastModified)
+        : (session.lastModified || session.createdAt);
+      const time = targetDate ? targetDate.getTime() : 0;
       if (time >= startOfToday) {
         result.today.push(session);
       } else if (time >= startOfYesterday) {
@@ -269,8 +280,38 @@ export class TimeGroupTreeItem extends vscode.TreeItem {
 }
 
 export class SessionTreeItem extends vscode.TreeItem {
-  constructor(public readonly session: ChatSession) {
-    super(session.title, vscode.TreeItemCollapsibleState.None);
+  public readonly ancestorIds: Set<string>;
+
+  constructor(
+    public readonly session: ChatSession,
+    allSessions: ChatSession[] = [],
+    isChildExecutor: boolean = false,
+    ancestorIds?: Set<string>
+  ) {
+    const sessionsList = Array.isArray(allSessions) ? allSessions : [];
+    const parentIdLower = session.id.toLowerCase();
+    const resolvedAncestors = new Set<string>(ancestorIds ? Array.from(ancestorIds) : []);
+    resolvedAncestors.add(parentIdLower);
+    const refIds = new Set((session.executorRefs || []).map((r) => r.conversationId.toLowerCase()));
+    const directChildren = sessionsList.filter(
+      (s) =>
+        s.id.toLowerCase() !== parentIdLower &&
+        !resolvedAncestors.has(s.id.toLowerCase()) &&
+        ((s.executorParentId && s.executorParentId.toLowerCase() === parentIdLower) ||
+          (!s.executorParentId && refIds.has(s.id.toLowerCase())))
+    );
+    const hasChildren = directChildren.length > 0;
+    const descendants = hasChildren ? ExecutorLayoutHelper.collectExecutorDescendants(session, sessionsList) : [];
+    const hasLiveChild = descendants.some((d) => d.executorStatus === 'running');
+    const collapsible = hasChildren
+      ? (hasLiveChild ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed)
+      : vscode.TreeItemCollapsibleState.None;
+
+    const displayTitle = isChildExecutor && session.executorRole
+      ? `${session.executorRole}: ${session.title}`
+      : session.title;
+    super(displayTitle, collapsible);
+    this.ancestorIds = resolvedAncestors;
 
     const isThread = Boolean((session.childIds && session.childIds.length > 0) || session.parentId);
     const totalArtifacts = session.artifactCount || (session.artifacts ? session.artifacts.length : (session.hasArtifacts ? 1 : 0));
@@ -287,10 +328,41 @@ export class SessionTreeItem extends vscode.TreeItem {
       ? `📅 ${cTimeStr}`
       : `📅 ${cTimeStr} ➔ ${lTimeStr}`;
     const msgCountStr = `💬${session.messageCount}`;
+    const hasTreeRollup = Boolean(
+      !session.executorParentId &&
+      session.treeTokenUsage &&
+      session.treeTokenUsage.executorCount > 1 &&
+      session.treeTokenUsage.cumulativeTokens > 0
+    );
+    const hasTokenUsage = Boolean(session.tokenUsage && session.tokenUsage.peakContextTokens > 0);
+    let tokenStr = '';
+    if (hasTreeRollup && session.treeTokenUsage) {
+      const treeCum = SessionScanner.formatCompactTokens(session.treeTokenUsage.cumulativeTokens);
+      const treeCachePct = Math.round(Number(session.treeTokenUsage.overallCacheHitRatio || 0));
+      const peakStr = hasTokenUsage && session.tokenUsage
+        ? `${SessionScanner.formatCompactTokens(session.tokenUsage.peakContextTokens)} ctx · `
+        : '';
+      tokenStr = ` • ⚡ ${peakStr}Σ ${treeCum} tree (${treeCachePct}% cache)`;
+    } else if (hasTokenUsage && session.tokenUsage) {
+      tokenStr = ` • ⚡ ${SessionScanner.formatCompactTokens(session.tokenUsage.peakContextTokens)} ctx (${Math.round(Number(session.tokenUsage.overallCacheHitRatio || 0))}% cache)`;
+    }
     const wsStr = session.workspaceName ? ` • 📁 ${session.workspaceName}` : '';
     const pcStr = session.machineName ? ` • 💻 ${session.machineName}` : '';
 
-    this.description = `${typeIconStr}${timeStr} • ${msgCountStr}${wsStr}${pcStr}`;
+    let execBadgeStr = '';
+    if (isChildExecutor) {
+      const st = ExecutorLayoutHelper.getStatusDisplay(session.executorStatus);
+      const steps = session.stepCount ?? session.messageCount ?? 0;
+      const actionStr = session.latestAction ? ` · ${session.latestAction}` : '';
+      execBadgeStr = `${st.icon} ${st.label} · ${steps} steps${actionStr} • `;
+    } else if (hasChildren || session.swarmSummary) {
+      const summaryBadge = ExecutorLayoutHelper.buildExecutorTreeSummaryBadge(session, sessionsList);
+      if (summaryBadge.badgeText) {
+        execBadgeStr = `${summaryBadge.badgeText} • `;
+      }
+    }
+
+    this.description = `${execBadgeStr}${typeIconStr}${timeStr} • ${msgCountStr}${tokenStr}${wsStr}${pcStr}`;
 
     this.contextValue = 'sessionItem';
 
@@ -315,6 +387,30 @@ export class SessionTreeItem extends vscode.TreeItem {
       : `${cFull} ➔ ${lFull}`;
     md.appendMarkdown(`- **📅 Date**: ${dateFullDisplay}\n`);
     md.appendMarkdown(`- **Messages**: ${session.messageCount} (${session.userPromptCount} user prompts)\n`);
+    if (hasTokenUsage && session.tokenUsage) {
+      const peakCompact = SessionScanner.formatCompactTokens(session.tokenUsage.peakContextTokens);
+      const latestCompact = SessionScanner.formatCompactTokens(session.tokenUsage.latestContextTokens);
+      const cachedCompact = SessionScanner.formatCompactTokens(session.tokenUsage.totalCacheReadTokens);
+      const outCompact = SessionScanner.formatCompactTokens(session.tokenUsage.totalOutputTokens);
+      const cachePct = Number(session.tokenUsage.overallCacheHitRatio || 0).toFixed(1);
+      const cost = TokenUsageMonitor.calculateTokenCost(session.tokenUsage);
+      const costStr = TokenUsageMonitor.formatUsdCost(cost.totalCost);
+      md.appendMarkdown(
+        `- **⚡ Token Telemetry**: Peak **${peakCompact}** (${session.tokenUsage.peakContextTokens.toLocaleString()} ctx) · Latest **${latestCompact}** · Cache Hit **${cachePct}%** · Σ Cached **${cachedCompact}** · Σ Out **${outCompact}** · Est. Cost **~${costStr}**\n`
+      );
+    }
+    if (hasTreeRollup && session.treeTokenUsage) {
+      const treeCum = SessionScanner.formatCompactTokens(session.treeTokenUsage.cumulativeTokens);
+      const treeIn = SessionScanner.formatCompactTokens(session.treeTokenUsage.totalInputTokens);
+      const treeCached = SessionScanner.formatCompactTokens(session.treeTokenUsage.totalCacheReadTokens);
+      const treeOut = SessionScanner.formatCompactTokens(session.treeTokenUsage.totalOutputTokens);
+      const treeCachePct = Number(session.treeTokenUsage.overallCacheHitRatio || 0).toFixed(1);
+      const treeCost = TokenUsageMonitor.calculateTokenCost(session.treeTokenUsage);
+      const treeCostStr = TokenUsageMonitor.formatUsdCost(treeCost.totalCost);
+      md.appendMarkdown(
+        `- **🌳 Tree Rollup (${session.treeTokenUsage.executorCount} executors)**: Total **${treeCum}** · In **${treeIn}** · Cached **${treeCached}** (${treeCachePct}%) · Out **${treeOut}** · Est. Cost **~${treeCostStr}**\n`
+      );
+    }
     if (session.parentId) {
       md.appendMarkdown(`- **🔗 Continued from**: \`${session.parentId}\`\n`);
     }

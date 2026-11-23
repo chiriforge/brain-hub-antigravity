@@ -306,6 +306,27 @@ body.vscode-light .hljs-subst {
   font-family: var(--font-mono);
   font-size: 12.5px;
   border: 1px solid var(--border-color);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Table-scoped Inline Code Wrapping Rules (Short <= 20 chars vs Long > 20 chars) */
+td .inline-code-short,
+th .inline-code-short,
+.markdown-table .inline-code-short {
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+}
+
+td .inline-code-long,
+th .inline-code-long,
+.markdown-table .inline-code-long {
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 /* Color Preview Badge / Swatch */
@@ -519,6 +540,32 @@ body.vscode-light .markdown-link.file-link:hover {
 .md-action-btn.ide-preview-btn:hover {
   background: rgba(188, 140, 255, 0.28) !important;
   border-color: #b180d7 !important;
+}
+
+/* Table-scoped Markdown File Link Wrapping Overrides */
+td .md-link-wrapper,
+th .md-link-wrapper,
+.markdown-table .md-link-wrapper {
+  display: inline !important;
+  white-space: normal !important;
+}
+
+td .markdown-link.file-link,
+th .markdown-link.file-link,
+.markdown-table .markdown-link.file-link {
+  display: inline !important;
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
+td .md-link-actions,
+th .md-link-actions,
+.markdown-table .md-link-actions {
+  display: inline-flex !important;
+  white-space: nowrap !important;
+  vertical-align: middle !important;
+  margin-left: 4px !important;
 }
 
 /* High-contrast Text Selection Styling mapped to VS Code Editor Selection */

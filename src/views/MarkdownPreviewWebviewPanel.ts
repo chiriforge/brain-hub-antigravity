@@ -265,13 +265,17 @@ export class MarkdownPreviewWebviewPanel {
 
     try {
       let target = rawPath.trim();
-      try {
-        target = decodeURIComponent(target);
-      } catch {}
+      if (!fs.existsSync(target)) {
+        try {
+          target = decodeURIComponent(target);
+        } catch {}
+      }
       target = target.replace(/^file:\/{1,3}/i, '');
-      try {
-        target = decodeURIComponent(target);
-      } catch {}
+      if (!fs.existsSync(target)) {
+        try {
+          target = decodeURIComponent(target);
+        } catch {}
+      }
 
       let startLine = 0;
       let endLine = 0;
@@ -615,18 +619,40 @@ export class MarkdownPreviewWebviewPanel {
       text-decoration: underline;
     }
 
-    table {
+    .table-container {
+      width: 100%;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+
+    .table-container > table,
+    .table-container > .markdown-table {
+      margin: 0 !important;
+    }
+
+    table,
+    .markdown-table {
       border-collapse: collapse;
+      table-layout: auto;
       width: 100%;
       margin: 16px 0;
+      line-height: 1.55;
       page-break-inside: avoid;
     }
 
-    th, td {
+    th,
+    td,
+    .markdown-table th,
+    .markdown-table td {
       border: 1px solid #d0d7de;
       padding: 8px 12px;
       font-size: 12.5px;
+      line-height: 1.55;
       text-align: left;
+      vertical-align: top;
+      word-break: normal !important;
+      overflow-wrap: normal !important;
+      hyphens: none;
     }
 
     th {
@@ -1208,18 +1234,40 @@ export class MarkdownPreviewWebviewPanel {
             margin-bottom: 4px;
           }
 
-          .markdown-content table {
+          .table-container {
+            width: 100%;
+            overflow-x: auto;
+            margin: 18px 0;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-color);
+          }
+
+          .table-container > table,
+          .table-container > .markdown-table {
+            margin: 0 !important;
+          }
+
+          .markdown-content table,
+          .markdown-table {
             border-collapse: collapse;
+            table-layout: auto;
             width: 100%;
             margin: 18px 0;
             font-size: 13px;
+            line-height: 1.55;
           }
 
           .markdown-content th,
-          .markdown-content td {
+          .markdown-content td,
+          .markdown-table th,
+          .markdown-table td {
             border: 1px solid var(--border-color);
             padding: 8px 12px;
             text-align: left;
+            vertical-align: top;
+            word-break: normal !important;
+            overflow-wrap: normal !important;
+            hyphens: none;
           }
 
           .markdown-content th {
@@ -2154,7 +2202,7 @@ export class MarkdownPreviewWebviewPanel {
               if (!linkPath) {
                 const href = linkEl.getAttribute('href') || '';
                 if (href.startsWith('javascript:')) {
-                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\(['"]([^'"]+)['"]\)/);
+                  const m = href.match(/(?:openFile|openRichPreview|openIdePreview)\\(['"]([^'"]+)['"]\\)/);
                   if (m) {
                     try { linkPath = decodeURI(m[1]); } catch { linkPath = m[1]; }
                   }
@@ -2724,7 +2772,7 @@ export class MarkdownPreviewWebviewPanel {
               svgW = svg.viewBox.baseVal.width;
               svgH = svg.viewBox.baseVal.height;
             } else if (svg.getAttribute('viewBox')) {
-              const parts = svg.getAttribute('viewBox').trim().split(/[\s,]+/);
+              const parts = svg.getAttribute('viewBox').trim().split(/[\\s,]+/);
               if (parts.length === 4) {
                 svgW = parseFloat(parts[2]);
                 svgH = parseFloat(parts[3]);
